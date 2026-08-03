@@ -1,0 +1,15 @@
+{
+  "name": "omp-commandcode-provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Command Code model provider for Oh My Pi",
+  "scripts": {
+    "test": "bun test"
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
