@@ -13,16 +13,16 @@ A [Command Code](https://commandcode.ai) model provider plugin for [Oh My Pi](ht
 
 ## Install
 
-From this repository:
+From npm:
 
-```sh
-omp plugin link .
+```bash
+omp plugin install oh-my-pi-plugin-command-code
 ```
 
-For development, install dependencies first:
+From this repository:
 
-```sh
-bun install
+```bash
+omp plugin install https://github.com/metaphorics/oh-my-pi-plugin-command-code
 ```
 
 ## Getting an API key
