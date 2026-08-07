@@ -1,5 +1,7 @@
 import type {
 	Api,
+	ApiKey,
+	ApiKeyResolver,
 	AssistantMessage,
 	AssistantMessageEventStream,
 	AuthStorage,
@@ -10,6 +12,7 @@ import type {
 	ToolCall,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveApiKeyOnce } from "@oh-my-pi/pi-ai";
 import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 
 import {
@@ -209,6 +212,23 @@ function backoffMs(attempt: number): number {
 	return Math.min(10_000, Math.max(1_000, 100 * 2 ** attempt));
 }
 
+/**
+ * Collapse every bearer source into one resolver. omp's agent loop passes an
+ * ApiKeyResolver in `options.apiKey`; a pinned literal has nothing to rotate
+ * to, so it resolves to itself; a direct caller (test, embedder) gets
+ * AuthStorage's own a/b/c resolver. Undefined means no credential at all.
+ */
+function keyResolver(
+	apiKey: ApiKey | undefined,
+	auth: AuthStorage | undefined,
+	modelId: string,
+	sessionId: string | undefined,
+): ApiKeyResolver | undefined {
+	if (isApiKeyResolver(apiKey)) return apiKey;
+	if (typeof apiKey === "string" && apiKey !== "") return () => apiKey;
+	return auth?.resolver(PROVIDER_ID, { sessionId, modelId });
+}
+
 /** Sleep that resolves `false` early when the abort signal fires. */
 function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
 	const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -312,22 +332,36 @@ export function createCommandCodeStream(deps: {
 			stream.push({ type: "error", reason: "aborted", error: partial });
 		};
 
-		const triedKeys = new Set<string>();
-		let key: string | undefined;
+		const authStorage = deps.getAuthStorage();
+		const resolver = keyResolver(options?.apiKey, authStorage, model.id, sessionId);
+		let key = resolver === undefined ? undefined : await resolveApiKeyOnce(resolver, signal);
+		if (key === undefined || resolver === undefined) {
+			fail(NO_KEY_MESSAGE);
+			return;
+		}
+
 		let rateLimitAttempt = 0;
-		let authRetried = false;
+		let quotaSwitches = 0;
+		let authStep = 0;
 		let otherRetried = false;
+
+		/** Walk the remaining native a/b/c steps until the resolver yields a different bearer. */
+		const nextAuthKey = async (
+			error: unknown,
+			previousKey: string,
+		): Promise<string | undefined> => {
+			while (authStep < AUTH_RETRY_STEPS.length) {
+				const lastChance = AUTH_RETRY_STEPS[authStep] ?? true;
+				authStep += 1;
+				const next = await resolver({ lastChance, error, previousKey, signal });
+				if (next !== undefined && next !== previousKey) return next;
+			}
+			return undefined;
+		};
 
 		for (;;) {
 			if (signal?.aborted) {
 				failAborted();
-				return;
-			}
-
-			key = await deps.getAuthStorage()?.getApiKey(PROVIDER_ID, sessionId);
-			if (key === undefined && typeof options?.apiKey === "string") key = options.apiKey;
-			if (key === undefined) {
-				fail(NO_KEY_MESSAGE);
 				return;
 			}
 
@@ -380,7 +414,6 @@ export function createCommandCodeStream(deps: {
 			// Failure handling (plan step 9). Nothing beyond `start` has been
 			// emitted on every path that reaches here, so retrying is safe.
 			const verdict = classifyFailure(status, body);
-			const authStorage = deps.getAuthStorage();
 
 			if (verdict === "quota" && authStorage) {
 				const resetMs = resetAtMs(body);
@@ -390,8 +423,17 @@ export function createCommandCodeStream(deps: {
 					apiKey: key,
 					signal,
 				});
-				triedKeys.add(key);
-				if (mark.switched && triedKeys.size < MAX_KEY_ATTEMPTS) continue;
+				quotaSwitches += 1;
+				if (mark.switched && quotaSwitches < MAX_KEY_ATTEMPTS) {
+					// markUsageLimitReached already advanced the session-sticky pointer,
+					// so an initial resolve returns the sibling. Asking the resolver to
+					// rotate (lastChance) here would rotate twice and skip a key.
+					const next = await resolveApiKeyOnce(resolver, signal);
+					if (next !== undefined && next !== key) {
+						key = next;
+						continue;
+					}
+				}
 				let poolSize = 1;
 				try {
 					poolSize = Math.max(1, authStorage.listStoredCredentials(PROVIDER_ID).length);
@@ -401,20 +443,15 @@ export function createCommandCodeStream(deps: {
 				const resetIso =
 					mark.retryAtMs !== undefined ? new Date(mark.retryAtMs).toISOString() : "unknown";
 				fail(
-					`Command Code quota exhausted on all ${poolSize} key(s). Earliest reset: ${resetIso}.`,
+					`Command Code quota exhausted on all ${poolSize} key(s). Earliest reset: ${resetIso}. Run /login to add another key.`,
 				);
 				return;
 			}
 
-			if (verdict === "auth" && authStorage) {
-				const rotated = await authStorage.rotateSessionCredential(PROVIDER_ID, sessionId, {
-					error: body,
-					apiKey: key,
-					modelId: model.id,
-					signal,
-				});
-				if (rotated && !authRetried) {
-					authRetried = true;
+			if (verdict === "auth") {
+				const next = await nextAuthKey(body, key);
+				if (next !== undefined) {
+					key = next;
 					continue;
 				}
 				fail(

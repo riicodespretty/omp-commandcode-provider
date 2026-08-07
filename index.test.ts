@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type {
 	Api,
+	ApiKeyResolveContext,
+	ApiKeyResolver,
 	AssistantMessage,
 	AssistantMessageEvent,
 	AuthStorage,
@@ -9,15 +11,17 @@ import type {
 	StoredAuthCredential,
 	UsageLimitMarkResult,
 } from "@oh-my-pi/pi-ai";
+import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 
+import commandCodeProvider from "./index";
 import {
 	buildHeaders,
 	classifyFailure,
+	PROVIDER_ID,
 	resetAtMs,
 	resolveBaseUrl,
 	sanitizeApiKey,
 } from "./src/api";
-import { appendKey, readPool, removeKeyAt } from "./src/keys";
 import { COMMAND_CODE_MODELS, DEFAULT_MODEL_ID } from "./src/models";
 import { createCommandCodeStream } from "./src/stream";
 
@@ -126,7 +130,7 @@ function fetchByBearer(routes: Record<string, () => Response>): {
 }
 
 /** The subset of AuthStorage the stream exercises. Test double for a large
- *  third-party interface (~30 methods) — only these four are touched. */
+ *  third-party interface (~30 methods) — only these five are touched. */
 interface StreamAuthStorage {
 	getApiKey(provider: string, sessionId?: string): Promise<string | undefined>;
 	markUsageLimitReached(
@@ -140,6 +144,7 @@ interface StreamAuthStorage {
 		options?: unknown,
 	): Promise<boolean>;
 	listStoredCredentials(provider?: string): StoredAuthCredential[];
+	resolver(provider: string, options?: unknown): ApiKeyResolver;
 }
 
 /** A stub AuthStorage whose getApiKey yields keys in order, with live call counters. */
@@ -167,6 +172,20 @@ function stubAuthStorage(opts: {
 			return opts.rotateResult ?? false;
 		},
 		listStoredCredentials: () => [],
+		// Mirrors createApiKeyResolver: initial/refresh resolve reads the store,
+		// lastChance rotates first. Ordered getApiKey supplies the sibling.
+		resolver:
+			(): ApiKeyResolver =>
+			async ({ lastChance, error, previousKey, signal }: ApiKeyResolveContext) => {
+				if (error !== undefined && lastChance) {
+					await base.rotateSessionCredential(PROVIDER_ID, undefined, {
+						error,
+						apiKey: previousKey,
+						signal,
+					});
+				}
+				return base.getApiKey(PROVIDER_ID, undefined);
+			},
 	};
 	const stub = base as AuthStorage;
 	Object.defineProperty(stub, "markCalls", { get: () => counts.mark });
@@ -488,82 +507,153 @@ describe("stream — rate-limit backs off without rotating", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * 8. keys pool
+ * 8. native ApiKeyResolver
  * ------------------------------------------------------------------ */
 
-/** The subset of AuthStorage the keys module exercises. */
-interface PoolAuthStorage {
-	listStoredCredentials(provider?: string): StoredAuthCredential[];
-	set(provider: string, credential: unknown): Promise<void>;
-	removeCredential(provider: string, credentialId: number): Promise<boolean>;
+describe("stream — native ApiKeyResolver", () => {
+	test("uses the resolver from options.apiKey and never touches AuthStorage", async () => {
+		const [chunkA, chunkB] = splitMidLine();
+		const { fetch: fetchImpl, calls } = fetchByBearer({
+			"Bearer user_resolved": () => makeResponse([chunkA, chunkB]),
+		});
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => undefined,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext(), {
+			apiKey: (): string => "user_resolved",
+		});
+		const events = await collectEvents(stream);
+
+		expect(events[events.length - 1]?.type).toBe("done");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.auth).toBe("Bearer user_resolved");
+	});
+
+	test("401 walks the a/b/c steps and retries with the rotated key", async () => {
+		const [chunkA, chunkB] = splitMidLine();
+		const { fetch: fetchImpl, calls } = fetchByBearer({
+			"Bearer user_1": () => makeResponse([enc('{"error":{"message":"unauthorized"}}\n')], 401),
+			"Bearer user_2": () => makeResponse([chunkA, chunkB]),
+		});
+
+		const seen: { lastChance: boolean; previousKey: string | undefined }[] = [];
+		const resolver: ApiKeyResolver = ({ lastChance, previousKey }: ApiKeyResolveContext) => {
+			seen.push({ lastChance, previousKey });
+			return lastChance ? "user_2" : "user_1";
+		};
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => undefined,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext(), { apiKey: resolver });
+		const events = await collectEvents(stream);
+
+		expect(events[events.length - 1]?.type).toBe("done");
+		expect(seen).toEqual([
+			{ lastChance: false, previousKey: undefined },
+			{ lastChance: false, previousKey: "user_1" },
+			{ lastChance: true, previousKey: "user_1" },
+		]);
+		expect(calls).toHaveLength(2);
+		expect(calls[0]?.auth).toBe("Bearer user_1");
+		expect(calls[1]?.auth).toBe("Bearer user_2");
+	});
+});
+
+/* ------------------------------------------------------------------ *
+ * 9. extension registration
+ * ------------------------------------------------------------------ */
+
+/** The subset of ExtensionAPI the plugin's factory touches. */
+interface FakeExtensionAPI {
+	on(event: string, handler: (e: unknown, ctx: unknown) => void): void;
+	registerProvider(name: string, config: ProviderConfig): void;
+	registerCommand(name: string, options: unknown): void;
 }
 
-/** A minimal in-memory AuthStorage backed by an array, for the keys tests. */
-function poolAuthStorage(): AuthStorage & { _rows: StoredAuthCredential[] } {
-	let nextId = 1;
-	const _rows: StoredAuthCredential[] = [];
-	const base: PoolAuthStorage = {
-		listStoredCredentials: (provider?: string) =>
-			_rows.filter((r) => provider === undefined || r.provider === provider),
-		set: async (provider, entry) => {
-			const creds = Array.isArray(entry) ? entry : [entry];
-			// Replace the provider's whole entry (read-modify-write contract).
-			for (let i = _rows.length - 1; i >= 0; i--) {
-				if (_rows[i]?.provider === provider) _rows.splice(i, 1);
-			}
-			for (const c of creds) {
-				const cred = c as { type: "api_key"; key: string; source?: string };
-				_rows.push({
-					id: nextId++,
-					provider,
-					credential: { type: "api_key", key: cred.key, source: "login" },
-					disabledCause: null,
-				});
-			}
+function fakeExtensionApi(): {
+	pi: ExtensionAPI;
+	provider: { name?: string; config?: ProviderConfig };
+	commands: string[];
+	sessionStart(): ((e: unknown, ctx: unknown) => void) | undefined;
+} {
+	const provider: { name?: string; config?: ProviderConfig } = {};
+	const commands: string[] = [];
+	let onSessionStart: ((e: unknown, ctx: unknown) => void) | undefined;
+	const base: FakeExtensionAPI = {
+		on: (event, handler) => {
+			if (event === "session_start") onSessionStart = handler;
 		},
-		removeCredential: async (provider, credentialId) => {
-			const idx = _rows.findIndex((r) => r.provider === provider && r.id === credentialId);
-			if (idx === -1) return false;
-			_rows.splice(idx, 1);
-			return true;
+		registerProvider: (name, config) => {
+			provider.name = name;
+			provider.config = config;
+		},
+		registerCommand: (name) => {
+			commands.push(name);
 		},
 	};
-	const stub = base as AuthStorage;
-	Object.defineProperty(stub, "_rows", { get: () => _rows });
-	return stub as AuthStorage & { _rows: StoredAuthCredential[] };
+	return { pi: base as ExtensionAPI, provider, commands, sessionStart: () => onSessionStart };
 }
 
-describe("keys — pool management", () => {
-	test("appendKey twice then readPool returns both in insertion order", async () => {
-		const auth = poolAuthStorage();
-		await appendKey(auth, "user_one");
-		await appendKey(auth, "user_two");
-		const pool = readPool(auth);
-		expect(pool).toHaveLength(2);
-		expect(pool[0]?.key).toBe("user_one");
-		expect(pool[1]?.key).toBe("user_two");
+describe("extension registration", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
 	});
 
-	test("appendKey duplicate throws", async () => {
-		const auth = poolAuthStorage();
-		await appendKey(auth, "user_dup");
-		await expect(appendKey(auth, "user_dup")).rejects.toThrow(/already stored/i);
+	test("registers the provider with native oauth login and no bespoke commands", () => {
+		const { pi, provider, commands } = fakeExtensionApi();
+		commandCodeProvider(pi);
+
+		expect(provider.name).toBe(PROVIDER_ID);
+		expect(provider.config?.api).toBe("commandcode-generate");
+		expect(provider.config?.oauth?.name).toBe("Command Code");
+		expect(typeof provider.config?.oauth?.login).toBe("function");
+		expect(provider.config?.models).toHaveLength(COMMAND_CODE_MODELS.length);
+		expect(commands).toEqual([]);
 	});
 
-	test("removeKeyAt(1) returns true and shrinks the pool", async () => {
-		const auth = poolAuthStorage();
-		await appendKey(auth, "user_a");
-		await appendKey(auth, "user_b");
-		expect(await removeKeyAt(auth, 1)).toBe(true);
-		const pool = readPool(auth);
-		expect(pool).toHaveLength(1);
-		expect(pool[0]?.key).toBe("user_b");
-	});
+	test("session_start wires omp's session id onto the wire header", async () => {
+		const { pi, provider, sessionStart } = fakeExtensionApi();
+		commandCodeProvider(pi);
 
-	test("removeKeyAt(99) returns false when out of range", async () => {
-		const auth = poolAuthStorage();
-		await appendKey(auth, "user_a");
-		expect(await removeKeyAt(auth, 99)).toBe(false);
-		expect(readPool(auth)).toHaveLength(1);
+		const handler = sessionStart();
+		expect(handler).toBeDefined();
+		handler?.(undefined, {
+			modelRegistry: { authStorage: stubAuthStorage({ keys: ["user_test"] }) },
+			sessionManager: { getSessionId: () => "sess-native" },
+			cwd: "/tmp/cc-test",
+		});
+
+		const [chunkA, chunkB] = splitMidLine();
+		const seen: Record<string, string>[] = [];
+		globalThis.fetch = Object.assign(
+			async (_input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				seen.push((init?.headers as Record<string, string>) ?? {});
+				return makeResponse([chunkA, chunkB]);
+			},
+			{ preconnect: () => undefined },
+		);
+
+		const streamSimple = provider.config?.streamSimple;
+		expect(streamSimple).toBeDefined();
+		const stream = streamSimple?.(makeModel(), makeContext(), {
+			apiKey: (): string => "user_resolved",
+		});
+		expect(stream).toBeDefined();
+		if (!stream) return;
+		const events = await collectEvents(stream);
+
+		expect(events[events.length - 1]?.type).toBe("done");
+		expect(seen[0]?.["x-session-id"]).toBe("sess-native");
 	});
 });
