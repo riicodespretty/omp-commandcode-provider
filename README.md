@@ -48,7 +48,7 @@ Run `/logout` and pick **Command Code** to list the stored keys and remove one. 
 
 Every model request resolves its bearer through omp's own `ApiKeyResolver`, which skips blocked siblings and owns the bounded refresh-then-rotate retry policy.
 
-- **Quota exhausted** (insufficient credits, `RATE_LIMITED`, or a windowed `429` with `error.rateLimit`): the current key is blocked with `authStorage.markUsageLimitReached(...)`, which records Command Code's own reset window. If an unblocked sibling exists, the request is retried with it (capped at 4 rotations per call). If every key is blocked, the turn aborts immediately with the blocked count and the earliest reset time — it never waits.
+- **Quota exhausted** (insufficient credits, `RATE_LIMITED`, or a windowed `429` with `error.rateLimit`): the current key is blocked with `authStorage.markUsageLimitReached(...)`, which records Command Code's own reset window. If an unblocked sibling exists, the request is retried with it, capped at four quota failures per call (so at most three rotations). If every key is blocked, the turn aborts immediately with the blocked count and the earliest reset time — it never waits.
 - **Per-second rate limit** (a `429` without `error.rateLimit`, or `rate_limit_error`): the request backs off with the vendor's own exponential curve and retries with the **same** key. No rotation is consumed, because a transient throttle is not a dead key.
 - **Bad key** (`401` / unauthorised): the resolver walks its refresh-then-rotate steps; the request retries as soon as a different bearer comes back, and fails terminally when none does.
 - **Other errors**: retried once on `429`/`5xx`, otherwise surfaced as a terminal error.
@@ -68,6 +68,7 @@ A partial turn already on the wire is never replayed — once any content has be
 - Command Code bills its own credits, not per-token USD, so every model in the catalog reports a zero cost. The provider reports real token usage from the gateway's `finish` event.
 - The model catalog is a snapshot of `command-code@1.14.0`. When Command Code adds models, `src/models.ts` must be regenerated from a newer bundle; there is no discovery endpoint to automate it.
 - `~/.commandcode/auth.json` and `COMMAND_CODE_API_KEY` are **not** read. Keys enter only through `/login`.
+- The gateway's `x-session-id` header carries omp's own session id, read fresh on every request. Starting a new session with `/session new` therefore re-keys the wire thread and the sticky credential together.
 
 ## License
 
