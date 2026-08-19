@@ -1,0 +1,157 @@
+/**
+ * Dynamic Command Code model catalog discovery.
+ *
+ * Fetches the live model catalog from Command Code's keyless provider endpoint
+ * and maps it into ProviderModelConfig entries using the local capability snapshot.
+ */
+
+import type { ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
+
+import { DEFAULT_MAX_TOKENS, resolveBaseUrl } from "./api";
+import { capabilitiesForModel, ZERO_COST } from "./models";
+
+export const MODELS_PATH = "/provider/v1/models";
+export const DEFAULT_MODELS_TIMEOUT_MS = 10_000;
+
+type Env = Readonly<Record<string, string | undefined>>;
+
+export function resolveModelsUrl(env: Env = process.env): string {
+	const customUrl = env.COMMANDCODE_MODELS_URL;
+	if (customUrl && customUrl.trim().length > 0) {
+		return customUrl.trim();
+	}
+	return `${resolveBaseUrl(env)}${MODELS_PATH}`;
+}
+
+export function resolveModelsTimeoutMs(env: Env = process.env): number {
+	const raw = env.COMMANDCODE_MODELS_TIMEOUT_MS;
+	if (raw) {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return parsed;
+		}
+	}
+	return DEFAULT_MODELS_TIMEOUT_MS;
+}
+
+export function modelsFromApiResponse(value: unknown): ProviderModelConfig[] {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("Expected models response to be an object");
+	}
+
+	const record = value as Record<string, unknown>;
+	if (record.object !== "list") {
+		throw new Error("Expected models response object to be 'list'");
+	}
+
+	if (!Array.isArray(record.data)) {
+		throw new Error("Expected models response data to be an array");
+	}
+
+	if (record.data.length === 0) {
+		throw new Error("Expected models response data array to not be empty");
+	}
+
+	const models: ProviderModelConfig[] = [];
+	for (let i = 0; i < record.data.length; i++) {
+		const item = record.data[i];
+		if (typeof item !== "object" || item === null || Array.isArray(item)) {
+			throw new Error(`Expected model entry at index ${i} to be an object`);
+		}
+
+		const entry = item as Record<string, unknown>;
+		if (typeof entry.id !== "string" || entry.id.trim().length === 0) {
+			throw new Error(`Expected model entry at index ${i} to have a non-empty string 'id'`);
+		}
+
+		if (typeof entry.name !== "string" || entry.name.trim().length === 0) {
+			throw new Error(`Expected model entry at index ${i} to have a non-empty string 'name'`);
+		}
+
+		if (
+			typeof entry.context_length !== "number" ||
+			!Number.isFinite(entry.context_length) ||
+			entry.context_length <= 0
+		) {
+			throw new Error(
+				`Expected model entry at index ${i} to have a positive finite 'context_length'`,
+			);
+		}
+
+		const capabilities = capabilitiesForModel(entry.id);
+		models.push({
+			id: entry.id,
+			name: entry.name,
+			reasoning: capabilities.reasoning,
+			input: capabilities.input,
+			cost: ZERO_COST,
+			contextWindow: entry.context_length,
+			maxTokens: Math.min(entry.context_length, DEFAULT_MAX_TOKENS),
+		});
+	}
+
+	return models;
+}
+
+export interface FetchCommandCodeModelsOptions {
+	url?: string;
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+export async function fetchCommandCodeModels(
+	options: FetchCommandCodeModelsOptions = {},
+): Promise<ProviderModelConfig[]> {
+	const url = options.url ?? resolveModelsUrl();
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const timeoutMs = options.timeoutMs ?? resolveModelsTimeoutMs();
+	const externalSignal = options.signal;
+
+	if (externalSignal?.aborted) {
+		throw externalSignal.reason ?? new DOMException("The operation was aborted", "AbortError");
+	}
+
+	const controller = new AbortController();
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		controller.abort(new Error(`Command Code model discovery timed out after ${timeoutMs}ms`));
+	}, timeoutMs);
+
+	const onExternalAbort = () => {
+		controller.abort(
+			externalSignal?.reason ?? new DOMException("The operation was aborted", "AbortError"),
+		);
+	};
+
+	if (externalSignal) {
+		externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+	}
+
+	try {
+		const response = await fetchImpl(url, {
+			method: "GET",
+			headers: { accept: "application/json" },
+			signal: controller.signal,
+		});
+
+		if (!response.ok) {
+			const statusText = response.statusText ? ` ${response.statusText}` : "";
+			throw new Error(`Failed to fetch Command Code models: ${response.status}${statusText}`);
+		}
+
+		const body = await response.json();
+		return modelsFromApiResponse(body);
+	} catch (error) {
+		if (timedOut) {
+			throw new Error(`Command Code model discovery timed out after ${timeoutMs}ms`);
+		}
+		throw error;
+	} finally {
+		clearTimeout(timer);
+		if (externalSignal) {
+			externalSignal.removeEventListener("abort", onExternalAbort);
+		}
+	}
+}

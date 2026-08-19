@@ -22,7 +22,15 @@ import {
 	resolveBaseUrl,
 	sanitizeApiKey,
 } from "./src/api";
-import { COMMAND_CODE_MODELS, DEFAULT_MODEL_ID } from "./src/models";
+import {
+	DEFAULT_MODELS_TIMEOUT_MS,
+	fetchCommandCodeModels,
+	MODELS_PATH,
+	modelsFromApiResponse,
+	resolveModelsTimeoutMs,
+	resolveModelsUrl,
+} from "./src/catalog";
+import { capabilitiesForModel, DEFAULT_MODEL_ID } from "./src/models";
 import { createCommandCodeStream } from "./src/stream";
 
 /* ------------------------------------------------------------------ *
@@ -318,40 +326,248 @@ describe("api — buildHeaders", () => {
 	});
 });
 
-/* ------------------------------------------------------------------ *
- * 3. models catalog
- * ------------------------------------------------------------------ */
+describe("catalog — modelsFromApiResponse", () => {
+	test("maps a valid two-entry payload with 64k token clamp and zero cost", () => {
+		const payload = {
+			object: "list",
+			data: [
+				{
+					id: "claude-sonnet-5",
+					object: "model",
+					created: 1787133935,
+					owned_by: "command-code",
+					name: "Claude Sonnet 5",
+					context_length: 1_000_000,
+				},
+				{
+					id: "small-model",
+					object: "model",
+					created: 1787133935,
+					owned_by: "command-code",
+					name: "Small Model",
+					context_length: 8192,
+				},
+			],
+		};
+		const models = modelsFromApiResponse(payload);
+		expect(models).toHaveLength(2);
 
-describe("models catalog", () => {
-	test("has 52 entries", () => {
-		expect(COMMAND_CODE_MODELS).toHaveLength(52);
+		const sonnet = models[0]!;
+		expect(sonnet.id).toBe("claude-sonnet-5");
+		expect(sonnet.name).toBe("Claude Sonnet 5");
+		expect(sonnet.contextWindow).toBe(1_000_000);
+		expect(sonnet.maxTokens).toBe(64_000);
+		expect(sonnet.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		const sonnetCaps = capabilitiesForModel("claude-sonnet-5");
+		expect(sonnet.reasoning).toBe(sonnetCaps.reasoning);
+		expect(sonnet.input).toEqual(sonnetCaps.input);
+
+		const small = models[1]!;
+		expect(small.id).toBe("small-model");
+		expect(small.name).toBe("Small Model");
+		expect(small.contextWindow).toBe(8192);
+		expect(small.maxTokens).toBe(8192);
+		expect(small.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		const smallCaps = capabilitiesForModel("small-model");
+		expect(small.reasoning).toBe(smallCaps.reasoning);
+		expect(small.input).toEqual(smallCaps.input);
 	});
 
-	test("omits the three vendor-hidden ids", () => {
-		const ids = COMMAND_CODE_MODELS.map((m) => m.id);
-		expect(ids).not.toContain("MiniMaxAI/MiniMax-M3-Free");
-		expect(ids).not.toContain("tencent/Hy3");
-		expect(ids).not.toContain("inclusionai/ling-3.0-flash-free");
+	test("unknown model id defaults to non-reasoning text-only capabilities", () => {
+		const payload = {
+			object: "list",
+			data: [
+				{
+					id: "unknown/futuristic-v9",
+					name: "Futuristic V9",
+					context_length: 128_000,
+				},
+			],
+		};
+		const [model] = modelsFromApiResponse(payload);
+		expect(model?.reasoning).toBe(false);
+		expect(model?.input).toEqual(["text"]);
 	});
 
-	test("every entry has maxTokens 64000 and zero cost", () => {
-		for (const m of COMMAND_CODE_MODELS) {
-			expect(m.maxTokens).toBe(64_000);
-			expect(m.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		}
+	test("throws on non-object body", () => {
+		expect(() => modelsFromApiResponse(null)).toThrow();
+		expect(() => modelsFromApiResponse("string")).toThrow();
+		expect(() => modelsFromApiResponse(123)).toThrow();
+		expect(() => modelsFromApiResponse(undefined)).toThrow();
 	});
 
-	test("vision models include image, non-vision do not (spot checks)", () => {
-		const byId = new Map(COMMAND_CODE_MODELS.map((m) => [m.id, m]));
-		const sonnet = byId.get("claude-sonnet-5");
-		expect(sonnet?.input).toContain("image");
-		const deepseek = byId.get("deepseek/deepseek-v4-flash");
-		expect(deepseek?.input).not.toContain("image");
-		expect(deepseek?.input).toEqual(["text"]);
+	test("throws when object is not list", () => {
+		expect(() => modelsFromApiResponse({ object: "model", data: [] })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "error", data: [] })).toThrow();
+	});
+
+	test("throws on non-array data", () => {
+		expect(() => modelsFromApiResponse({ object: "list", data: null })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "list", data: "not-an-array" })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "list", data: {} })).toThrow();
+	});
+
+	test("throws on empty data array", () => {
+		expect(() => modelsFromApiResponse({ object: "list", data: [] })).toThrow();
+	});
+
+	test("throws when entry is missing name or id", () => {
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ id: "model-1", context_length: 32_000 }],
+			}),
+		).toThrow();
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ name: "Model 1", context_length: 32_000 }],
+			}),
+		).toThrow();
+	});
+
+	test("throws when entry has zero or non-numeric context_length", () => {
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ id: "m1", name: "M1", context_length: 0 }],
+			}),
+		).toThrow();
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ id: "m1", name: "M1", context_length: -100 }],
+			}),
+		).toThrow();
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ id: "m1", name: "M1", context_length: "32000" }],
+			}),
+		).toThrow();
+		expect(() =>
+			modelsFromApiResponse({
+				object: "list",
+				data: [{ id: "m1", name: "M1", context_length: Number.NaN }],
+			}),
+		).toThrow();
+	});
+});
+
+describe("catalog — fetchCommandCodeModels", () => {
+	test("happy path fetches models sending accept: application/json", async () => {
+		const payload = {
+			object: "list",
+			data: [
+				{
+					id: "claude-sonnet-5",
+					name: "Claude Sonnet 5",
+					context_length: 1_000_000,
+				},
+			],
+		};
+		let capturedUrl: string | URL | Request = "";
+		let capturedHeaders: Record<string, string> | undefined;
+
+		const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
+			capturedUrl = input as string;
+			capturedHeaders = init?.headers as Record<string, string> | undefined;
+			return new Response(JSON.stringify(payload), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+
+		const models = await fetchCommandCodeModels({ fetchImpl });
+		expect(models).toHaveLength(1);
+		expect(models[0]?.id).toBe("claude-sonnet-5");
+		expect(capturedUrl).toBe("https://api.commandcode.ai/provider/v1/models");
+		expect(capturedHeaders?.accept ?? capturedHeaders?.Accept).toBe("application/json");
+	});
+
+	test("500 response rejects with a message containing the status", async () => {
+		const fetchImpl = (async () => {
+			return new Response("Internal Server Error", {
+				status: 500,
+				statusText: "Internal Server Error",
+			});
+		}) as unknown as typeof fetch;
+
+		await expect(fetchCommandCodeModels({ fetchImpl })).rejects.toThrow(/500/);
+	});
+
+	test("hanging fetch with timeoutMs rejects with timeout message", async () => {
+		const fetchImpl = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => {
+					reject(new DOMException("The operation was aborted", "TimeoutError"));
+				});
+			});
+		}) as unknown as typeof fetch;
+
+		await expect(fetchCommandCodeModels({ fetchImpl, timeoutMs: 5 })).rejects.toThrow(
+			/timed out|5ms/i,
+		);
+	});
+
+	test("already-aborted external signal rejects", async () => {
+		const controller = new AbortController();
+		controller.abort();
+
+		const fetchImpl = (async () => {
+			return new Response(JSON.stringify({ object: "list", data: [] }), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		await expect(
+			fetchCommandCodeModels({ fetchImpl, signal: controller.signal }),
+		).rejects.toThrow();
+	});
+});
+
+describe("catalog — resolveModelsUrl / resolveModelsTimeoutMs", () => {
+	test("MODELS_PATH is the provider models path", () => {
+		expect(MODELS_PATH).toBe("/provider/v1/models");
 	});
 
 	test("DEFAULT_MODEL_ID is the vendor default", () => {
 		expect(DEFAULT_MODEL_ID).toBe("deepseek/deepseek-v4-flash");
+	});
+
+	test("resolveModelsUrl defaults to prod catalog URL", () => {
+		expect(resolveModelsUrl({})).toBe("https://api.commandcode.ai/provider/v1/models");
+		expect(resolveModelsUrl()).toBe("https://api.commandcode.ai/provider/v1/models");
+	});
+
+	test("resolveModelsUrl uses staging host when COMMANDCODE_API_ENV is staging", () => {
+		expect(resolveModelsUrl({ COMMANDCODE_API_ENV: "staging" })).toBe(
+			"https://staging-api.commandcode.ai/provider/v1/models",
+		);
+	});
+
+	test("resolveModelsUrl respects COMMANDCODE_MODELS_URL override", () => {
+		expect(
+			resolveModelsUrl({
+				COMMANDCODE_MODELS_URL: "https://custom.example.com/custom-models",
+				COMMANDCODE_API_ENV: "staging",
+			}),
+		).toBe("https://custom.example.com/custom-models");
+	});
+
+	test("resolveModelsTimeoutMs defaults to 10_000ms", () => {
+		expect(resolveModelsTimeoutMs({})).toBe(DEFAULT_MODELS_TIMEOUT_MS);
+		expect(resolveModelsTimeoutMs()).toBe(10_000);
+	});
+
+	test("resolveModelsTimeoutMs parses valid positive numbers", () => {
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "5000" })).toBe(5_000);
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "12345" })).toBe(12_345);
+	});
+
+	test("resolveModelsTimeoutMs ignores garbage and non-positive values", () => {
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "not-a-number" })).toBe(10_000);
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "0" })).toBe(10_000);
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "-500" })).toBe(10_000);
+		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "" })).toBe(10_000);
 	});
 });
 
@@ -610,7 +826,7 @@ describe("extension registration", () => {
 		globalThis.fetch = realFetch;
 	});
 
-	test("registers the provider with native oauth login and no bespoke commands", () => {
+	test("registers the provider with native oauth login and dynamic models fetcher", async () => {
 		const { pi, provider, commands } = fakeExtensionApi();
 		commandCodeProvider(pi);
 
@@ -618,8 +834,40 @@ describe("extension registration", () => {
 		expect(provider.config?.api).toBe("commandcode-generate");
 		expect(provider.config?.oauth?.name).toBe("Command Code");
 		expect(typeof provider.config?.oauth?.login).toBe("function");
-		expect(provider.config?.models).toHaveLength(COMMAND_CODE_MODELS.length);
+		expect(provider.config?.models).toBeUndefined();
+		expect(typeof provider.config?.fetchDynamicModels).toBe("function");
 		expect(commands).toEqual([]);
+
+		const sampleCatalog = {
+			object: "list",
+			data: [
+				{
+					id: "claude-sonnet-5",
+					object: "model",
+					created: 1787133935,
+					owned_by: "command-code",
+					name: "Claude Sonnet 5",
+					context_length: 1_000_000,
+				},
+			],
+		};
+		globalThis.fetch = Object.assign(
+			async () =>
+				new Response(JSON.stringify(sampleCatalog), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			{ preconnect: () => undefined },
+		);
+
+		const fetchDynamicModels = provider.config?.fetchDynamicModels;
+		expect(fetchDynamicModels).toBeDefined();
+		const models = await fetchDynamicModels?.(undefined);
+		expect(models).toHaveLength(1);
+		expect(models?.[0]?.id).toBe("claude-sonnet-5");
+		expect(models?.[0]?.name).toBe("Claude Sonnet 5");
+		expect(models?.[0]?.contextWindow).toBe(1_000_000);
+		expect(models?.[0]?.maxTokens).toBe(64_000);
 	});
 
 	test("session_start wires omp's session id onto the wire header", async () => {
