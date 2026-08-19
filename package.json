@@ -1,19 +1,24 @@
 {
-	"name": "oh-my-pi-plugin-command-code",
-	"version": "0.1.1",
+	"name": "omp-commandcode-provider",
+	"version": "0.1.0",
 	"type": "module",
-	"description": "Command Code model provider for Oh My Pi",
+	"description": "Command Code model provider for Oh My Pi with a dynamically discovered model catalog",
 	"license": "MIT",
-	"author": "metaphorics",
+	"author": "riicodespretty",
+	"homepage": "https://github.com/riicodespretty/omp-commandcode-provider#readme",
+	"bugs": {
+		"url": "https://github.com/riicodespretty/omp-commandcode-provider/issues"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/metaphorics/oh-my-pi-plugin-command-code.git"
+		"url": "git+https://github.com/riicodespretty/omp-commandcode-provider.git"
 	},
 	"keywords": [
 		"oh-my-pi",
 		"omp",
 		"plugin",
 		"command-code",
+		"commandcode",
 		"llm",
 		"provider"
 	],
