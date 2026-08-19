@@ -30,7 +30,8 @@ import {
 	resolveModelsTimeoutMs,
 	resolveModelsUrl,
 } from "./src/catalog";
-import { capabilitiesForModel, DEFAULT_MODEL_ID } from "./src/models";
+import { capabilitiesForModel, DEFAULT_MODEL_ID, MODEL_CAPABILITIES } from "./src/models";
+import { costForModel, MODEL_COSTS, ZERO_COST } from "./src/pricing";
 import { createCommandCodeStream } from "./src/stream";
 
 /* ------------------------------------------------------------------ *
@@ -49,7 +50,7 @@ function makeModel(
 		baseUrl: "https://api.commandcode.ai",
 		reasoning: overrides.reasoning ?? false,
 		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		cost: ZERO_COST,
 		contextWindow: 1_000_000,
 		maxTokens: overrides.maxTokens ?? 64_000,
 		compat: undefined,
@@ -327,7 +328,7 @@ describe("api — buildHeaders", () => {
 });
 
 describe("catalog — modelsFromApiResponse", () => {
-	test("maps a valid two-entry payload with 64k token clamp and zero cost", () => {
+	test("maps a valid two-entry payload with 64k token clamp and model cost", () => {
 		const payload = {
 			object: "list",
 			data: [
@@ -352,28 +353,57 @@ describe("catalog — modelsFromApiResponse", () => {
 		const models = modelsFromApiResponse(payload);
 		expect(models).toHaveLength(2);
 
-		const sonnet = models[0]!;
+		const [sonnet, small] = models;
+		if (!sonnet || !small) throw new Error("expected two mapped models");
 		expect(sonnet.id).toBe("claude-sonnet-5");
 		expect(sonnet.name).toBe("Claude Sonnet 5");
 		expect(sonnet.contextWindow).toBe(1_000_000);
 		expect(sonnet.maxTokens).toBe(64_000);
-		expect(sonnet.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		expect(sonnet.cost).toEqual(costForModel("claude-sonnet-5"));
 		const sonnetCaps = capabilitiesForModel("claude-sonnet-5");
 		expect(sonnet.reasoning).toBe(sonnetCaps.reasoning);
 		expect(sonnet.input).toEqual(sonnetCaps.input);
 
-		const small = models[1]!;
 		expect(small.id).toBe("small-model");
 		expect(small.name).toBe("Small Model");
 		expect(small.contextWindow).toBe(8192);
 		expect(small.maxTokens).toBe(8192);
-		expect(small.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		expect(small.cost).toEqual(costForModel("small-model"));
 		const smallCaps = capabilitiesForModel("small-model");
 		expect(small.reasoning).toBe(smallCaps.reasoning);
 		expect(small.input).toEqual(smallCaps.input);
 	});
 
-	test("unknown model id defaults to non-reasoning text-only capabilities", () => {
+	test("maps priced models to real rates and unlisted models to ZERO_COST", () => {
+		const payload = {
+			object: "list",
+			data: [
+				{
+					id: "claude-sonnet-5",
+					name: "Claude Sonnet 5",
+					context_length: 1_000_000,
+				},
+				{
+					id: "deepseek/deepseek-v4-flash",
+					name: "DeepSeek v4 Flash",
+					context_length: 128_000,
+				},
+				{
+					id: "unlisted-model",
+					name: "Unlisted Model",
+					context_length: 32_000,
+				},
+			],
+		};
+		const models = modelsFromApiResponse(payload);
+		expect(models).toHaveLength(3);
+
+		expect(models[0]?.cost).toEqual({ input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
+		expect(models[1]?.cost).toEqual({ input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0 });
+		expect(models[2]?.cost).toEqual(ZERO_COST);
+	});
+
+	test("unknown model id defaults to non-reasoning text-only capabilities and zero cost", () => {
 		const payload = {
 			object: "list",
 			data: [
@@ -387,6 +417,7 @@ describe("catalog — modelsFromApiResponse", () => {
 		const [model] = modelsFromApiResponse(payload);
 		expect(model?.reasoning).toBe(false);
 		expect(model?.input).toEqual(["text"]);
+		expect(model?.cost).toEqual(ZERO_COST);
 	});
 
 	test("throws on non-object body", () => {
@@ -568,6 +599,121 @@ describe("catalog — resolveModelsUrl / resolveModelsTimeoutMs", () => {
 		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "0" })).toBe(10_000);
 		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "-500" })).toBe(10_000);
 		expect(resolveModelsTimeoutMs({ COMMANDCODE_MODELS_TIMEOUT_MS: "" })).toBe(10_000);
+	});
+});
+
+describe("pricing", () => {
+	test("costForModel returns exact MODEL_COSTS row for known id and ZERO_COST for unknown id", () => {
+		expect(costForModel("claude-sonnet-5")).toEqual({
+			input: 2,
+			output: 10,
+			cacheRead: 0.2,
+			cacheWrite: 2.5,
+		});
+		expect(costForModel("deepseek/deepseek-v4-flash")).toEqual({
+			input: 0.22,
+			output: 0.66,
+			cacheRead: 0.007,
+			cacheWrite: 0,
+		});
+		expect(costForModel("unknown/nonexistent-model")).toEqual(ZERO_COST);
+	});
+
+	test("MODEL_COSTS contains exactly 56 rows", () => {
+		expect(Object.keys(MODEL_COSTS)).toHaveLength(56);
+	});
+
+	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
+		for (const cost of Object.values(MODEL_COSTS)) {
+			for (const field of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+				expect(typeof cost[field]).toBe("number");
+				expect(Number.isFinite(cost[field])).toBe(true);
+				expect(cost[field]).toBeGreaterThanOrEqual(0);
+			}
+		}
+	});
+
+	test("poolside/laguna-s-2.1-free is genuinely all-zero", () => {
+		expect(costForModel("poolside/laguna-s-2.1-free")).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
+	});
+
+	test("not every row in MODEL_COSTS is zero", () => {
+		const nonZeroRows = Object.values(MODEL_COSTS).filter(
+			(cost) => cost.input > 0 || cost.output > 0 || cost.cacheRead > 0 || cost.cacheWrite > 0,
+		);
+		expect(nonZeroRows.length).toBeGreaterThan(0);
+	});
+});
+
+describe("capabilities audit", () => {
+	test("MODEL_CAPABILITIES contains exactly 56 rows", () => {
+		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(56);
+	});
+
+	test("MODEL_COSTS and MODEL_CAPABILITIES carry the identical id set", () => {
+		const costKeys = Object.keys(MODEL_COSTS).sort();
+		const capKeys = Object.keys(MODEL_CAPABILITIES).sort();
+		expect(costKeys).toEqual(capKeys);
+	});
+
+	test("audit-added ids are present with correct capabilities", () => {
+		expect(MODEL_CAPABILITIES["zai-org/GLM-5.3"]).toEqual({ reasoning: true, vision: false });
+		expect(capabilitiesForModel("zai-org/GLM-5.3")).toEqual({ reasoning: true, input: ["text"] });
+
+		expect(MODEL_CAPABILITIES["google/gemini-3.7-flash"]).toEqual({
+			reasoning: true,
+			vision: true,
+		});
+		expect(capabilitiesForModel("google/gemini-3.7-flash")).toEqual({
+			reasoning: true,
+			input: ["text", "image"],
+		});
+
+		expect(MODEL_CAPABILITIES["xai/grok-4.6"]).toEqual({ reasoning: true, vision: false });
+		expect(capabilitiesForModel("xai/grok-4.6")).toEqual({ reasoning: true, input: ["text"] });
+
+		expect(MODEL_CAPABILITIES["Qwen/Qwen3.8-27B"]).toEqual({ reasoning: true, vision: true });
+		expect(capabilitiesForModel("Qwen/Qwen3.8-27B")).toEqual({
+			reasoning: true,
+			input: ["text", "image"],
+		});
+	});
+
+	test("corrected ids report reasoning true", () => {
+		expect(capabilitiesForModel("moonshotai/Kimi-K3").reasoning).toBe(true);
+		expect(MODEL_CAPABILITIES["moonshotai/Kimi-K3"]?.reasoning).toBe(true);
+
+		expect(capabilitiesForModel("Qwen/Qwen3.7-Max").reasoning).toBe(true);
+		expect(MODEL_CAPABILITIES["Qwen/Qwen3.7-Max"]?.reasoning).toBe(true);
+
+		expect(capabilitiesForModel("tencent/hy3-paid").reasoning).toBe(true);
+		expect(MODEL_CAPABILITIES["tencent/hy3-paid"]?.reasoning).toBe(true);
+
+		expect(capabilitiesForModel("nvidia/nemotron-3-ultra-550b-a55b").reasoning).toBe(true);
+		expect(MODEL_CAPABILITIES["nvidia/nemotron-3-ultra-550b-a55b"]?.reasoning).toBe(true);
+	});
+
+	test("claude-haiku-4-5-20251001 remains non-reasoning with vision", () => {
+		expect(MODEL_CAPABILITIES["claude-haiku-4-5-20251001"]).toEqual({
+			reasoning: false,
+			vision: true,
+		});
+		expect(capabilitiesForModel("claude-haiku-4-5-20251001")).toEqual({
+			reasoning: false,
+			input: ["text", "image"],
+		});
+	});
+
+	test("unknown model id yields non-reasoning text-only capabilities", () => {
+		expect(capabilitiesForModel("unknown/nonexistent-model")).toEqual({
+			reasoning: false,
+			input: ["text"],
+		});
 	});
 });
 

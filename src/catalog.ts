@@ -8,7 +8,8 @@
 import type { ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 
 import { DEFAULT_MAX_TOKENS, resolveBaseUrl } from "./api";
-import { capabilitiesForModel, ZERO_COST } from "./models";
+import { capabilitiesForModel } from "./models";
+import { costForModel } from "./pricing";
 
 export const MODELS_PATH = "/provider/v1/models";
 export const DEFAULT_MODELS_TIMEOUT_MS = 10_000;
@@ -84,7 +85,7 @@ export function modelsFromApiResponse(value: unknown): ProviderModelConfig[] {
 			name: entry.name,
 			reasoning: capabilities.reasoning,
 			input: capabilities.input,
-			cost: ZERO_COST,
+			cost: costForModel(entry.id),
 			contextWindow: entry.context_length,
 			maxTokens: Math.min(entry.context_length, DEFAULT_MAX_TOKENS),
 		});
