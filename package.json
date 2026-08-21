@@ -1,6 +1,6 @@
 {
 	"name": "omp-commandcode-provider",
-	"version": "0.2.5",
+	"version": "0.2.6",
 	"description": "Command Code model provider for Oh My Pi with a dynamically discovered model catalog",
 	"keywords": [
 		"command-code",
