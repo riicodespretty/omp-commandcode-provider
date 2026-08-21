@@ -14,7 +14,62 @@ let getSessionId: () => string | undefined = () => undefined;
 let projectSlug = "0000000000";
 const wrappedStorages = new WeakSet<object>();
 
+function formatUsageForNotify(report: UsageReport | null): string {
+	if (!report) return "No Command Code usage data available.";
+	const lines = report.limits.map((limit) => {
+		const used = limit.amount.used ?? limit.amount.usedFraction;
+		const suffix =
+			limit.amount.unit === "percent"
+				? "%"
+				: limit.amount.unit === "usd"
+					? " USD"
+					: ` ${limit.amount.unit}`;
+		const usedText =
+			used === undefined
+				? "unknown"
+				: Number.isFinite(used)
+					? `${used.toFixed(2)}${suffix}`
+					: String(used);
+		const reset = limit.window?.resetsAt
+			? ` (resets ${new Date(limit.window.resetsAt).toISOString().slice(0, 10)})`
+			: "";
+		return `- ${limit.label}: ${usedText}${reset}`;
+	});
+	return ["Command Code usage", ...lines].join("\n");
+}
+
 export default function commandCodeProvider(pi: ExtensionAPI): void {
+	pi.registerCommand("usage-commandcode", {
+		description: "Show Command Code account usage (credits, plan, billing period).",
+		async handler(_args, ctx) {
+			const storage = ctx.modelRegistry.authStorage;
+			let apiKey: string | undefined;
+			try {
+				apiKey = await storage.getApiKey(PROVIDER_ID, ctx.sessionManager.getSessionId());
+			} catch {
+				ctx.ui.notify("Command Code is not logged in. Run /login and pick Command Code.", "error");
+				return;
+			}
+			if (!apiKey) {
+				ctx.ui.notify("Command Code is not logged in. Run /login and pick Command Code.", "error");
+				return;
+			}
+			let report: UsageReport | null = null;
+			try {
+				report = await fetchCommandCodeUsage({
+					apiKey,
+					baseUrl: resolveBaseUrl(),
+					sessionId: ctx.sessionManager.getSessionId(),
+					projectSlug: createHash("sha256").update(ctx.cwd).digest("hex").slice(0, 10),
+				});
+			} catch {
+				ctx.ui.notify("Could not fetch Command Code usage.", "error");
+				return;
+			}
+			ctx.ui.notify(formatUsageForNotify(report), "info");
+		},
+	});
+
 	pi.on("session_start", (_e, ctx) => {
 		authStorage = ctx.modelRegistry.authStorage;
 		getSessionId = () => ctx.sessionManager.getSessionId() || undefined;

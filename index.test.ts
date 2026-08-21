@@ -45,6 +45,7 @@ import {
 	parseSummary,
 	parseWhoami,
 } from "./src/commandcode-usage";
+import { type JsonValue } from "./src/guards";
 import { loginWithCommandCode } from "./src/login";
 
 /* ------------------------------------------------------------------ *
@@ -1313,7 +1314,7 @@ interface FakeExtensionAPI {
 /** The registerCommand options shape the plugin's factory passes through. */
 interface CommandOptions {
 	description?: string;
-	handler(...args: unknown[]): void;
+	handler(...args: unknown[]): Promise<void>;
 }
 
 /** Provider identity captured by the fake registration. */
@@ -1322,17 +1323,22 @@ interface ProviderCapture {
 	config?: ProviderConfig;
 }
 
+interface CommandCapture {
+	name: string;
+	options: { description?: string; handler(...args: unknown[]): Promise<void> };
+}
+
 /** Result of {@link fakeExtensionApi}. */
 interface FakeExtensionApiResult {
 	pi: ExtensionAPI;
 	provider: ProviderCapture;
-	commands: string[];
+	commands: CommandCapture[];
 	sessionStart: () => SessionHandler | undefined;
 }
 
 function fakeExtensionApi(): FakeExtensionApiResult {
 	const provider: ProviderCapture = {};
-	const commands: string[] = [];
+	const commands: CommandCapture[] = [];
 	let onSessionStart: SessionHandler | undefined;
 	const base: FakeExtensionAPI = {
 		on: (event, handler) => {
@@ -1342,8 +1348,8 @@ function fakeExtensionApi(): FakeExtensionApiResult {
 			provider.name = name;
 			provider.config = config;
 		},
-		registerCommand: (name) => {
-			commands.push(name);
+		registerCommand: (name, options) => {
+			commands.push({ name, options });
 		},
 	};
 	// SAFETY: the stub implements the three ExtensionAPI members the plugin
@@ -1376,7 +1382,7 @@ describe("extension registration", () => {
 		expect(Object.prototype.toString.call(provider.config?.fetchDynamicModels)).toBe(
 			"[object Function]",
 		);
-		expect(commands).toEqual([]);
+		expect(commands.map((c) => c.name)).toEqual(["usage-commandcode"]);
 
 		const sampleCatalog = {
 			object: "list",
@@ -1408,6 +1414,61 @@ describe("extension registration", () => {
 		expect(models?.[0]?.name).toBe("Claude Sonnet 5");
 		expect(models?.[0]?.contextWindow).toBe(1_000_000);
 		expect(models?.[0]?.maxTokens).toBe(64_000);
+	});
+
+	test("usage-commandcode fetches and notifies the Command Code usage report", async () => {
+		const { pi, commands } = fakeExtensionApi();
+		commandCodeProvider(pi);
+
+		const cmd = commands.find((c) => c.name === "usage-commandcode");
+		expect(cmd).toBeDefined();
+
+		const notified: string[] = [];
+		const ctx = {
+			modelRegistry: { authStorage: stubAuthStorage({ keys: ["user_test"] }) },
+			sessionManager: { getSessionId: () => "sess-usage" },
+			cwd: "/tmp/cc-test",
+			ui: { notify: (message: string) => notified.push(message) },
+		};
+		const handler = cmd?.options.handler.bind(cmd?.options) ?? undefined;
+		expect(handler).toBeDefined();
+
+		globalThis.fetch = Object.assign(
+			async (input: URL | RequestInfo) => {
+				const url = urlOf(input);
+				const json = (body: JsonValue, status = 200) =>
+					new Response(JSON.stringify(body), {
+						status,
+						headers: { "Content-Type": "application/json" },
+					});
+				if (url.includes("/alpha/whoami"))
+					return json({ data: { user: { userName: "alice" }, org: { id: "org_123" } } });
+				if (url.includes("/alpha/billing/credits"))
+					return json({
+						data: { credits: { monthlyCredits: 100, purchasedCredits: 20, freeCredits: 5 } },
+					});
+				if (url.includes("/alpha/billing/subscriptions"))
+					return json({
+						data: {
+							planId: "individual-plus",
+							status: "active",
+							currentPeriodStart: "2026-08-01T00:00:00Z",
+							currentPeriodEnd: "2026-09-01T00:00:00Z",
+						},
+					});
+				if (url.includes("/alpha/usage/summary")) return json({ data: { totalCost: 25 } });
+				return json({}, 404);
+			},
+			{ preconnect: () => undefined },
+		);
+
+		await handler?.("", ctx);
+
+		expect(notified.length).toBe(1);
+		const text = notified[0] ?? "";
+		expect(text).toContain("Command Code usage");
+		expect(text).toContain("Command Code Credits");
+		expect(text).toContain("25.00 USD");
 	});
 
 	test("session_start wires omp's session id onto the wire header", async () => {
