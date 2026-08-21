@@ -133,11 +133,11 @@ Each model request resolves its API key through omp's `ApiKeyResolver`, which sk
 
 When the gateway starts streaming on a turn, the plugin treats a subsequently reported error as terminal rather than retrying it, preventing duplicated output.
 
-## `/usage`
+## `/usage-commandcode`
 
-The plugin feeds the host's built-in `/usage` command with real Command Code account usage. When the session starts, the plugin wraps the host's `fetchUsageReports` on the auth storage instance. The wrapper resolves each stored Command Code API key, queries each account, and appends a `commandcode` usage report per account to the host's existing reports, collapsing duplicate keys to one report per account. The `/usage-commandcode` slash command renders the same data directly.
+Run `/usage-commandcode` inside omp to show real Command Code usage for each logged-in account. The plugin resolves each stored Command Code API key, queries each account, and builds one usage report per account, collapsing duplicate keys to one report per account. The output groups the reports by window (`5 Hour limit`, `Weekly limit`, `Monthly limit`) and shows each account's percent-free.
 
-The plugin builds the report from four gateway endpoints:
+The plugin builds each report from four gateway endpoints:
 
 | Endpoint                                                    | Function                                                                                    |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -151,11 +151,11 @@ The report renders windowed limits for each account:
 - `Command Code Usage (5h)` and `(7d)`—the gateway's five-hour and weekly window limits (`used` against `limit`), with the reset time from each window. When a window exceeds its limit, the report notes `Limit reached`.
 - **Command Code Credits**—the monthly balance: the USD cost spent since the billing period started as `used`, against a limit of `used + remaining` (monthly plus purchased plus free credits), with a used fraction. The status is `ok` less than 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
 
-Each request uses the resolved base URL and the same headers as model traffic, forwards the host's cancel signal, and runs through the host credential store. A failed request degrades to no report rather than an error: `/usage` then falls back to the host's session token tallies, which the plugin's per-turn cost tracking (`readWireUsage` in `src/stream.ts`) feeds from the gateway's `finish` event.
+Each request uses the resolved base URL and the same headers as model traffic, forwards the host's cancel signal, and runs through the host credential store. A failed request degrades to no report rather than an error, so the command shows only the accounts it can fetch.
 
 ### Status line
 
-The status-line `usage` segment renders only for built-in providers, so it does not show for Command Code. The plugin's usage reports supply the `/usage` command and `/usage-commandcode` in its place.
+The status-line `usage` segment renders only for built-in providers, so it does not show for Command Code. The `/usage-commandcode` command supplies the usage display in its place.
 
 The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style)—so the rate reflects the real hit ratio rather than capping at 50%.
 
