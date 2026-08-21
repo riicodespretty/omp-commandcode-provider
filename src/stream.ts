@@ -271,7 +271,8 @@ function readWireUsage(finishEvent: JsonObject, modelId: string): Usage | undefi
 		if (isJsonNumber(details.cacheReadTokens)) cacheRead = details.cacheReadTokens;
 		if (isJsonNumber(details.cacheWriteTokens)) cacheWrite = details.cacheWriteTokens;
 	}
-	const input = Math.max(0, inputTokens - cacheRead - cacheWrite);
+	const cacheTotal = cacheRead + cacheWrite;
+	const input = cacheTotal > inputTokens ? inputTokens : inputTokens - cacheTotal;
 	const rates = costForModel(modelId);
 	const inputCost = (input * rates.input) / 1_000_000;
 	const outputCost = (output * rates.output) / 1_000_000;

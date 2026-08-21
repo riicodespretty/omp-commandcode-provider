@@ -1086,6 +1086,45 @@ describe("stream — cache hit input split", () => {
 			expectedInputCost + expectedOutputCost + expectedCacheReadCost + expectedCacheWriteCost,
 		);
 	});
+	test("treats cache-exclusive wire shape as additive input without subtracting", async () => {
+		const ndjson = [
+			'{"type":"text-delta","text":"Cached response"}\n',
+			'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":30,"outputTokens":20,"inputTokenDetails":{"cacheReadTokens":60,"cacheWriteTokens":10}}}\n',
+		].join("");
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([enc(ndjson)]),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel({ id: "claude-sonnet-5" }), makeContext());
+		const msg = await finalMessage(stream);
+
+		expect(msg.usage.input).toBe(30);
+		expect(msg.usage.output).toBe(20);
+		expect(msg.usage.cacheRead).toBe(60);
+		expect(msg.usage.cacheWrite).toBe(10);
+		expect(msg.usage.totalTokens).toBe(120);
+
+		const rates = costForModel("claude-sonnet-5");
+		const expectedInputCost = (30 * rates.input) / 1_000_000;
+		const expectedOutputCost = (20 * rates.output) / 1_000_000;
+		const expectedCacheReadCost = (60 * rates.cacheRead) / 1_000_000;
+		const expectedCacheWriteCost = (10 * rates.cacheWrite) / 1_000_000;
+		expect(msg.usage.cost.input).toBeCloseTo(expectedInputCost);
+		expect(msg.usage.cost.output).toBeCloseTo(expectedOutputCost);
+		expect(msg.usage.cost.cacheRead).toBeCloseTo(expectedCacheReadCost);
+		expect(msg.usage.cost.cacheWrite).toBeCloseTo(expectedCacheWriteCost);
+		expect(msg.usage.cost.total).toBeCloseTo(
+			expectedInputCost + expectedOutputCost + expectedCacheReadCost + expectedCacheWriteCost,
+		);
+	});
 });
 
 /* ------------------------------------------------------------------ *
@@ -1665,6 +1704,41 @@ describe("commandcode-usage — buildUsageReport", () => {
 		});
 		expect(r2.metadata?.account).toBe("org_1");
 	});
+	test("emits 7d and 5h windowId limits sharing the credits usedFraction", () => {
+		const summary = { totalCost: 25, topModels: ["claude-sonnet-4", "gpt-4o"] };
+		const report = buildUsageReport({ whoami, credits, subscription, summary, fetchedAt: 1_000 });
+		const creditsLimit = report.limits.find((l) => l.id === "commandcode:credits");
+		const w7d = report.limits.find((l) => l.id === "commandcode:usage:7d");
+		const w5h = report.limits.find((l) => l.id === "commandcode:usage:5h");
+		expect(w7d).toBeDefined();
+		expect(w5h).toBeDefined();
+		expect(w7d?.scope.windowId).toBe("7d");
+		expect(w5h?.scope.windowId).toBe("5h");
+		expect(w7d?.scope.provider).toBe(PROVIDER_ID);
+		expect(w7d?.scope.orgId).toBe("org_123");
+		expect(w7d?.label).toBe("Command Code Usage (7d)");
+		expect(w5h?.label).toBe("Command Code Usage (5h)");
+		expect(w7d?.amount.usedFraction).toBe(creditsLimit?.amount.usedFraction);
+		expect(w5h?.amount.usedFraction).toBe(creditsLimit?.amount.usedFraction);
+		expect(w7d?.amount.unit).toBe("usd");
+		expect(w7d?.status).toBe(creditsLimit?.status);
+		expect(w7d?.window?.resetsAt).toBe(Date.parse("2026-09-01T00:00:00Z"));
+		expect(report.limits.some((l) => l.id === "commandcode:credits")).toBe(true);
+		expect(report.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(true);
+		expect(report.limits.some((l) => l.id === "commandcode:summary")).toBe(true);
+	});
+	test("omits windowId limits when usedFraction is undefined", () => {
+		const report = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0 },
+			subscription: null,
+			summary: null,
+			fetchedAt: 1,
+		});
+		expect(report.limits.some((l) => l.scope.windowId === "7d" || l.scope.windowId === "5h")).toBe(
+			false,
+		);
+	});
 });
 
 describe("commandcode-usage — fetchCommandCodeUsage", () => {
@@ -1903,6 +1977,37 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 			expect(reports?.find((r) => r.provider === PROVIDER_ID)?.limits[0]?.id).toBe(
 				"commandcode:credits",
 			);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+	test("wrapper adds commandcode report to a host-only report list", async () => {
+		const origReport: UsageReport = { provider: "anthropic", fetchedAt: 1, limits: [] };
+		const storage = asAuthStorage({
+			getApiKey: async () => "user_test",
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => [origReport],
+		});
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = makeUsageFetch({ data: { totalCost: 5 } });
+		try {
+			const fakePi = asExtensionApi({
+				on: (event: string, fn: SessionHandler) => {
+					if (event === "session_start")
+						fn(undefined, {
+							modelRegistry: { authStorage: storage },
+							sessionManager: { getSessionId: () => "sess-1" },
+							cwd: "/tmp/cc-test",
+						});
+				},
+				registerProvider: () => {},
+				registerCommand: () => {},
+			});
+			commandCodeProvider(fakePi);
+			const reports = await storage.fetchUsageReports();
+			expect(reports).not.toBeNull();
+			expect(reports?.some((r) => r.provider === "anthropic")).toBe(true);
+			expect(reports?.some((r) => r.provider === PROVIDER_ID)).toBe(true);
+			expect(reports?.filter((r) => r.provider === PROVIDER_ID)).toHaveLength(1);
 		} finally {
 			globalThis.fetch = realFetch;
 		}

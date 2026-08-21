@@ -154,6 +154,14 @@ The report renders:
 
 Every request uses the resolved base URL and the same headers as model traffic, forwards the host's abort signal, and runs through the host credential store. Any failed request degrades to no report rather than an error: `/usage` then falls back to the host's session token tallies, which the plugin's per-turn cost tracking (`readWireUsage` in `src/stream.ts`) feeds from the gateway's `finish` event.
 
+### Status line
+
+The report also drives the host's status-line `usage` segment when Command Code is the active provider. It carries `7d` and `5h` windowed limits with the same used fraction as the credits limit, which the host renders as `7d <pct>%` and `5h <pct>%` with the billing-period reset.
+
+The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style) — so the rate reflects the real hit ratio rather than capping at 50%.
+
+The `token_rate` segment shows the last assistant turn's throughput (`output / duration`), as the host computes it. It is not a moving average across turns. A session-level average would be a host-side change.
+
 ## Environment variables
 
 | Variable                        | Purpose                                                                                                                                                                                                                    |

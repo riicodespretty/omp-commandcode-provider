@@ -212,6 +212,22 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 		});
 	}
 
+	if (usedFraction !== undefined) {
+		for (const [windowId, label] of [
+			["7d", "Command Code Usage (7d)"],
+			["5h", "Command Code Usage (5h)"],
+		] as const) {
+			limits.push({
+				id: `commandcode:usage:${windowId}`,
+				label,
+				scope: { ...scope, windowId },
+				window: resetsAt ? { id: windowId, label, resetsAt } : undefined,
+				amount: { used, limit: total, remaining, usedFraction, unit: "usd" },
+				status: statusFor(usedFraction),
+			});
+		}
+	}
+
 	return {
 		provider: PROVIDER_ID,
 		fetchedAt,
