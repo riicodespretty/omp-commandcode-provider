@@ -111,10 +111,10 @@ The web interface at <https://commandcode.ai/studio> issues Command Code keys, a
 
 Run `/login` inside omp and select **Command Code**. The plugin:
 
-1. Starts a local HTTP server on `127.0.0.1`, binding the first available port in the range `5959`–`5968`, serving `/callback`.
+1. Starts a local HTTP server on `127.0.0.1`, binding the first available port in the range `5959`–`5968`, serving `/callback`. The server also answers `GET /` and `GET /launch` with a redirect to the auth URL.
 2. Opens `https://commandcode.ai/studio/auth/cli?callback=http://localhost:<port>/callback&state=<state>` in your browser.
-3. Waits for the web application to `POST { apiKey, state, userId, userName, keyName }` to the callback URL, or for you to paste a `user_` key directly into the terminal prompt.
-4. Validates the key against `GET /alpha/whoami` and returns it to omp to store in the credential store.
+3. Waits for the web application to `POST { apiKey, state }` to the callback URL, or for you to paste a `user_` key directly into the terminal prompt. The plugin reads only `state` (to reject mismatched callbacks) and `apiKey`.
+4. Validates the key against `GET /alpha/whoami` (requiring `success: true`) and returns it to omp to store in the credential store.
 
 Run `/login` again with a different key to add another key to the provider's credential pool. A submitted key that matches a key in the pool updates that entry in place.
 
@@ -135,28 +135,27 @@ When the gateway starts streaming on a turn, the plugin treats a subsequently re
 
 ## `/usage`
 
-The plugin feeds the host's built-in `/usage` command with real Command Code account usage. When the session starts, the plugin wraps the host's `fetchUsageReports` on the auth storage instance. The wrapper resolves a stored Command Code API key, queries the account, and appends a `commandcode` usage report to the host's existing reports.
+The plugin feeds the host's built-in `/usage` command with real Command Code account usage. When the session starts, the plugin wraps the host's `fetchUsageReports` on the auth storage instance. The wrapper resolves each stored Command Code API key, queries each account, and appends a `commandcode` usage report per account to the host's existing reports, collapsing duplicate keys to one report per account. The `/usage-commandcode` slash command renders the same data directly.
 
 The plugin builds the report from four gateway endpoints:
 
-| Endpoint                                                   | Function                                                               |
-| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `GET /alpha/whoami`                                        | Resolves the account's org ID and login.                               |
-| `GET /alpha/billing/credits?orgId=<id>`                    | Current monthly, purchased, and free credit balances plus the plan ID. |
-| `GET /alpha/billing/subscriptions?orgId=<id>`              | Billing period start and end.                                          |
-| `GET /alpha/usage/summary?orgId=<id>&since=<period start>` | USD cost accumulated since the period start.                           |
+| Endpoint                                                    | Function                                                                                    |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /alpha/whoami`                                         | Resolves the account's user id and name, and the org id and login when present.             |
+| `GET /alpha/billing/credits?userId=<id>`                    | Monthly, purchased, and free credit balances, the plan id, and the `5h`/`7d` window limits. |
+| `GET /alpha/billing/subscriptions?userId=<id>`              | Billing period start and end.                                                               |
+| `GET /alpha/usage/summary?userId=<id>&since=<period start>` | USD cost accumulated since the period start.                                                |
 
-The report renders:
+The report renders windowed limits for each account:
 
-- **Command Code Credits**—the combined balance (monthly plus purchased plus free), the cost spent since the billing period started, and a used fraction. The status is `ok` less than 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
-- **Plan**—the monthly credit limit for the active plan, when known.
-- **Usage since period start**—the accumulated USD cost, with the top models by cost when the summary provides them.
+- `Command Code Usage (5h)` and `(7d)`—the gateway's five-hour and weekly window limits (`used` against `limit`), with the reset time from each window. When a window exceeds its limit, the report notes `Limit reached`.
+- **Command Code Credits**—the monthly balance: the USD cost spent since the billing period started as `used`, against a limit of `used + remaining` (monthly plus purchased plus free credits), with a used fraction. The status is `ok` less than 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
 
 Each request uses the resolved base URL and the same headers as model traffic, forwards the host's cancel signal, and runs through the host credential store. A failed request degrades to no report rather than an error: `/usage` then falls back to the host's session token tallies, which the plugin's per-turn cost tracking (`readWireUsage` in `src/stream.ts`) feeds from the gateway's `finish` event.
 
 ### Status line
 
-The report also drives the host's status-line `usage` segment when Command Code is the active provider. It carries `7d` and `5h` windowed limits with the same used fraction as the credits limit, which the host renders as `7d <pct>%` and `5h <pct>%` with the billing-period reset.
+The report also drives the host's status-line `usage` segment when Command Code is the active provider. It carries `7d` and `5h` windowed limits, each with its own used fraction (`used` against `limit`), which the host renders as `7d <pct>%` and `5h <pct>%` with the window's reset.
 
 The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style)—so the rate reflects the real hit ratio rather than capping at 50%.
 
