@@ -38,6 +38,7 @@ import { costForModel } from "./pricing";
 
 const MAX_KEY_ATTEMPTS = 4;
 const MAX_RATE_LIMIT_ATTEMPTS = 3;
+const MAX_UPSTREAM_RETRIES = 3;
 const NO_KEY_MESSAGE = "No Command Code API key. Run /login and pick Command Code.";
 const MISSING_FINISH_MESSAGE = "Command Code stream ended without a finish event";
 
@@ -261,7 +262,7 @@ function isAbortError<T>(err: T): boolean {
 function readWireUsage(finishEvent: JsonObject, modelId: string): Usage | undefined {
 	const totalUsage = finishEvent.totalUsage;
 	if (!isJsonObject(totalUsage)) return undefined;
-	const input = isJsonNumber(totalUsage.inputTokens) ? totalUsage.inputTokens : 0;
+	const inputTokens = isJsonNumber(totalUsage.inputTokens) ? totalUsage.inputTokens : 0;
 	const output = isJsonNumber(totalUsage.outputTokens) ? totalUsage.outputTokens : 0;
 	let cacheRead = 0;
 	let cacheWrite = 0;
@@ -270,7 +271,12 @@ function readWireUsage(finishEvent: JsonObject, modelId: string): Usage | undefi
 		if (isJsonNumber(details.cacheReadTokens)) cacheRead = details.cacheReadTokens;
 		if (isJsonNumber(details.cacheWriteTokens)) cacheWrite = details.cacheWriteTokens;
 	}
+	const input = Math.max(0, inputTokens - cacheRead - cacheWrite);
 	const rates = costForModel(modelId);
+	const inputCost = (input * rates.input) / 1_000_000;
+	const outputCost = (output * rates.output) / 1_000_000;
+	const cacheReadCost = (cacheRead * rates.cacheRead) / 1_000_000;
+	const cacheWriteCost = (cacheWrite * rates.cacheWrite) / 1_000_000;
 	return {
 		input,
 		output,
@@ -278,15 +284,11 @@ function readWireUsage(finishEvent: JsonObject, modelId: string): Usage | undefi
 		cacheWrite,
 		totalTokens: input + output + cacheRead + cacheWrite,
 		cost: {
-			input: (input * rates.input) / 1_000_000,
-			output: (output * rates.output) / 1_000_000,
-			cacheRead: (cacheRead * rates.cacheRead) / 1_000_000,
-			cacheWrite: (cacheWrite * rates.cacheWrite) / 1_000_000,
-			total:
-				(input * rates.input) / 1_000_000 +
-				(output * rates.output) / 1_000_000 +
-				(cacheRead * rates.cacheRead) / 1_000_000 +
-				(cacheWrite * rates.cacheWrite) / 1_000_000,
+			input: inputCost,
+			output: outputCost,
+			cacheRead: cacheReadCost,
+			cacheWrite: cacheWriteCost,
+			total: inputCost + outputCost + cacheReadCost + cacheWriteCost,
 		},
 	};
 }
@@ -309,7 +311,8 @@ export function createCommandCodeStream(deps: {
 ) => AssistantMessageEventStream {
 	return (model, context, options) => {
 		const stream = createAssistantMessageEventStream();
-		void run(model, context, options, stream).catch((err) => {
+		const streamStartTime = performance.now();
+		void run(model, context, options, stream, streamStartTime).catch((err) => {
 			// Last-resort guard: run() converts every known failure into a
 			// terminal event, so reaching here means an unexpected throw.
 			if (stream.done) return;
@@ -317,6 +320,7 @@ export function createCommandCodeStream(deps: {
 			const aborted = isAbortError(err);
 			partial.stopReason = aborted ? "aborted" : "error";
 			partial.errorMessage = err instanceof Error ? err.message : String(err);
+			partial.duration = performance.now() - streamStartTime;
 			stream.push({ type: "error", reason: aborted ? "aborted" : "error", error: partial });
 		});
 		// SAFETY: the local stream implements the host event stream's public
@@ -330,24 +334,39 @@ export function createCommandCodeStream(deps: {
 		context: Context,
 		options: SimpleStreamOptions | undefined,
 		stream: LocalAssistantMessageEventStream,
+		startTime: number,
 	): Promise<void> {
 		const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
 		const signal = options?.signal;
 		const sessionId = deps.getSessionId();
 		const threadId = sessionId ?? crypto.randomUUID();
 		const partial = seedPartial(model);
+		partial.timestamp = Date.now();
 		stream.push({ type: "start", partial });
+
+		interface StreamMetrics {
+			firstTokenAt?: number;
+		}
+		const metrics: StreamMetrics = {};
+		const stampMetrics = (): void => {
+			partial.duration = performance.now() - startTime;
+			if (metrics.firstTokenAt != null) {
+				partial.ttft = metrics.firstTokenAt - startTime;
+			}
+		};
 
 		const fail = (message: string, status?: number): void => {
 			partial.stopReason = "error";
 			partial.errorMessage = message;
 			if (status !== undefined) partial.errorStatus = status;
+			stampMetrics();
 			stream.push({ type: "error", reason: "error", error: partial });
 		};
 
 		const failAborted = (): void => {
 			partial.stopReason = "aborted";
 			partial.errorMessage = "Command Code request aborted";
+			stampMetrics();
 			stream.push({ type: "error", reason: "aborted", error: partial });
 		};
 
@@ -360,10 +379,10 @@ export function createCommandCodeStream(deps: {
 		}
 
 		let rateLimitAttempt = 0;
+		let upstreamRetries = 0;
 		let quotaSwitches = 0;
 		let authStep = 0;
 		let otherRetried = false;
-
 		/** Walk the remaining native a/b/c steps until the resolver yields a different bearer. */
 		const nextAuthKey = async (
 			error: JsonValue,
@@ -400,6 +419,14 @@ export function createCommandCodeStream(deps: {
 					failAborted();
 					return;
 				}
+				if (upstreamRetries < MAX_UPSTREAM_RETRIES) {
+					upstreamRetries += 1;
+					if (!(await abortableSleep(backoffMs(upstreamRetries), signal))) {
+						failAborted();
+						return;
+					}
+					continue;
+				}
 				fail(err instanceof Error ? err.message : String(err));
 				return;
 			}
@@ -417,7 +444,14 @@ export function createCommandCodeStream(deps: {
 				}
 				body = isJsonObject(parsed) ? parsed : {};
 			} else {
-				const outcome = await consumeStream(response, partial, stream, model.id);
+				const outcome = await consumeStream(
+					response,
+					partial,
+					stream,
+					model.id,
+					metrics,
+					stampMetrics,
+				);
 				if (outcome === "done") return;
 				if (outcome === "aborted") {
 					failAborted();
@@ -430,6 +464,15 @@ export function createCommandCodeStream(deps: {
 				}
 				status = outcome.status;
 				body = outcome.body;
+				const retryable = status === undefined || status === 429 || status >= 500;
+				if (retryable && upstreamRetries < MAX_UPSTREAM_RETRIES) {
+					upstreamRetries += 1;
+					if (!(await abortableSleep(backoffMs(upstreamRetries), signal))) {
+						failAborted();
+						return;
+					}
+					continue;
+				}
 			}
 
 			// Failure handling (plan step 9). Nothing beyond `start` has been
@@ -498,7 +541,7 @@ export function createCommandCodeStream(deps: {
 
 			// verdict === "other"
 			const retryable = status !== undefined && (status === 429 || status >= 500);
-			if (retryable && !otherRetried) {
+			if (retryable && !otherRetried && upstreamRetries === 0) {
 				otherRetried = true;
 				if (!(await abortableSleep(backoffMs(1), signal))) {
 					failAborted();
@@ -520,6 +563,8 @@ export function createCommandCodeStream(deps: {
 		partial: AssistantMessage,
 		stream: LocalAssistantMessageEventStream,
 		modelId: string,
+		metrics: { firstTokenAt?: number },
+		stampMetrics: () => void,
 	): Promise<StreamOutcome> {
 		if (!response.body) return { status: response.status, body: {} };
 		const reader = response.body.getReader();
@@ -533,6 +578,7 @@ export function createCommandCodeStream(deps: {
 			partial.stopReason = "error";
 			partial.errorMessage = message;
 			if (status !== undefined) partial.errorStatus = status;
+			stampMetrics();
 			stream.push({ type: "error", reason: "error", error: partial });
 		};
 
@@ -592,6 +638,7 @@ export function createCommandCodeStream(deps: {
 				switch (event.type) {
 					case "text-delta": {
 						if (!isJsonString(ev.text)) break;
+						metrics.firstTokenAt ??= performance.now();
 						if (openBlock !== "text") {
 							closeOpenBlock();
 							partial.content.push({ type: "text", text: "" });
@@ -614,6 +661,7 @@ export function createCommandCodeStream(deps: {
 					}
 					case "reasoning-delta": {
 						if (!isJsonString(ev.text)) break;
+						metrics.firstTokenAt ??= performance.now();
 						if (openBlock !== "thinking") {
 							closeOpenBlock();
 							partial.content.push({ type: "thinking", thinking: "" });
@@ -674,6 +722,7 @@ export function createCommandCodeStream(deps: {
 						} else {
 							partial.stopReason = "stop";
 						}
+						stampMetrics();
 						stream.push({ type: "done", reason: partial.stopReason, message: partial });
 						return "done";
 					}

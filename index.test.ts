@@ -1042,6 +1042,214 @@ describe("stream — native ApiKeyResolver", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * 8b. cache hit accounting
+ * ------------------------------------------------------------------ */
+
+describe("stream — cache hit input split", () => {
+	test("subtracts cached tokens from input to compute un-cached input and costs", async () => {
+		const ndjson = [
+			'{"type":"text-delta","text":"Cached response"}\n',
+			'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":100,"outputTokens":20,"inputTokenDetails":{"cacheReadTokens":60,"cacheWriteTokens":10}}}\n',
+		].join("");
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([enc(ndjson)]),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel({ id: "claude-sonnet-5" }), makeContext());
+		const msg = await finalMessage(stream);
+
+		expect(msg.usage.input).toBe(30);
+		expect(msg.usage.output).toBe(20);
+		expect(msg.usage.cacheRead).toBe(60);
+		expect(msg.usage.cacheWrite).toBe(10);
+		expect(msg.usage.totalTokens).toBe(120);
+
+		const rates = costForModel("claude-sonnet-5");
+		const expectedInputCost = (30 * rates.input) / 1_000_000;
+		const expectedOutputCost = (20 * rates.output) / 1_000_000;
+		const expectedCacheReadCost = (60 * rates.cacheRead) / 1_000_000;
+		const expectedCacheWriteCost = (10 * rates.cacheWrite) / 1_000_000;
+		expect(msg.usage.cost.input).toBeCloseTo(expectedInputCost);
+		expect(msg.usage.cost.output).toBeCloseTo(expectedOutputCost);
+		expect(msg.usage.cost.cacheRead).toBeCloseTo(expectedCacheReadCost);
+		expect(msg.usage.cost.cacheWrite).toBeCloseTo(expectedCacheWriteCost);
+		expect(msg.usage.cost.total).toBeCloseTo(
+			expectedInputCost + expectedOutputCost + expectedCacheReadCost + expectedCacheWriteCost,
+		);
+	});
+});
+
+/* ------------------------------------------------------------------ *
+ * 8c. metrics stamping
+ * ------------------------------------------------------------------ */
+
+describe("stream — metrics stamping", () => {
+	test("stamps timestamp, duration, and ttft on successful stream completion", async () => {
+		const [chunkA, chunkB] = splitMidLine();
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([chunkA, chunkB]),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const before = Date.now();
+		const stream = streamFn(makeModel(), makeContext());
+		const msg = await finalMessage(stream);
+		const after = Date.now();
+
+		expect(msg.timestamp).toBeGreaterThanOrEqual(before);
+		expect(msg.timestamp).toBeLessThanOrEqual(after + 100);
+		expect(Number.isFinite(msg.duration)).toBe(true);
+		expect(Number.isFinite(msg.ttft)).toBe(true);
+		expect((msg.duration ?? 0) >= 0).toBe(true);
+		expect((msg.ttft ?? 0) >= 0).toBe(true);
+	});
+
+	test("stamps timestamp and duration on stream failure", async () => {
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([enc('{"error":{"message":"bad request"}}\n')], 400),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const errEvent = events.find((e) => e.type === "error");
+
+		expect(errEvent?.type).toBe("error");
+		const duration = errEvent?.type === "error" ? errEvent.error.duration : undefined;
+		expect(Number.isFinite(duration)).toBe(true);
+		expect((duration ?? 0) >= 0).toBe(true);
+	});
+});
+
+/* ------------------------------------------------------------------ *
+ * 8d. upstream stream-error retry
+ * ------------------------------------------------------------------ */
+
+describe("stream — upstream stream-error retry", () => {
+	test("retries transient mid-stream error events up to 3 times then fails", async () => {
+		let callCount = 0;
+		const fetchImpl: typeof fetch = Object.assign(
+			async () => {
+				callCount += 1;
+				return makeResponse([
+					enc('{"type":"error","error":{"statusCode":500,"message":"Upstream stream failure"}}\n'),
+				]);
+			},
+			{ preconnect: () => undefined },
+		);
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const errEvent = events.find((e) => e.type === "error");
+
+		expect(errEvent?.type).toBe("error");
+		expect(callCount).toBe(4);
+		expect(errEvent?.type === "error" ? errEvent.error.errorMessage : "").toContain(
+			"Upstream stream failure",
+		);
+	});
+
+	test("emits content once when retried upstream error succeeds on retry", async () => {
+		const [chunkA, chunkB] = splitMidLine();
+		let callCount = 0;
+		const fetchImpl: typeof fetch = Object.assign(
+			async () => {
+				callCount += 1;
+				if (callCount === 1) {
+					return makeResponse([
+						enc('{"type":"error","error":{"statusCode":503,"message":"Service Unavailable"}}\n'),
+					]);
+				}
+				return makeResponse([chunkA, chunkB]);
+			},
+			{ preconnect: () => undefined },
+		);
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const types = events.map((e) => e.type);
+
+		expect(callCount).toBe(2);
+		expect(types).toEqual(["start", "text_start", "text_delta", "text_delta", "text_end", "done"]);
+		const msg = await finalMessage(stream);
+		const textPart = msg.content.find((c) => c.type === "text");
+		expect(textPart?.type === "text" ? textPart.text : "").toBe("Hello");
+		expect(Number.isFinite(msg.duration)).toBe(true);
+		expect(Number.isFinite(msg.ttft)).toBe(true);
+	});
+
+	test("retries network fetch error and succeeds on subsequent attempt", async () => {
+		const [chunkA, chunkB] = splitMidLine();
+		let callCount = 0;
+		const fetchImpl: typeof fetch = Object.assign(
+			async () => {
+				callCount += 1;
+				if (callCount === 1) {
+					throw new Error("network fetch failed");
+				}
+				return makeResponse([chunkA, chunkB]);
+			},
+			{ preconnect: () => undefined },
+		);
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const last = events[events.length - 1];
+
+		expect(callCount).toBe(2);
+		expect(last?.type).toBe("done");
+		const msg = await finalMessage(stream);
+		expect(Number.isFinite(msg.duration)).toBe(true);
+	});
+});
+
+/* ------------------------------------------------------------------ *
  * 9. extension registration
  * ------------------------------------------------------------------ */
 
