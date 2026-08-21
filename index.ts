@@ -58,7 +58,7 @@ function formatUsageForNotify(reports: UsageReport[] | null, now = Date.now()): 
 			const fraction = limit.amount.usedFraction;
 			const reached = limit.notes?.includes("Limit reached");
 			const suffix = reached
-				? "  ⚠ Limit reached"
+				? " ⚠ Limit reached"
 				: fraction === undefined
 					? ""
 					: ` ${Math.max(0, 100 - Math.round(fraction * 100)).toFixed(1)}% free`;
