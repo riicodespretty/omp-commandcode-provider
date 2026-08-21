@@ -1,31 +1,71 @@
 import { createHash } from "node:crypto";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, UsageReport } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { API_ID, PROVIDER_ID, resolveBaseUrl } from "./src/api";
 import { fetchCommandCodeModels, resolveModelsTimeoutMs, resolveModelsUrl } from "./src/catalog";
+import { fetchCommandCodeUsage, mergeCommandCodeReport } from "./src/commandcode-usage";
+import { isCallable } from "./src/guards";
 import { loginWithCommandCode } from "./src/login";
 import { createCommandCodeStream } from "./src/stream";
 
-// Captured on session_start; read by the stream.
 let authStorage: AuthStorage | undefined;
 let getSessionId: () => string | undefined = () => undefined;
 let projectSlug = "0000000000";
+const wrappedStorages = new WeakSet<object>();
 
 export default function commandCodeProvider(pi: ExtensionAPI): void {
 	pi.on("session_start", (_e, ctx) => {
 		authStorage = ctx.modelRegistry.authStorage;
-		// Read live per request rather than snapshotting, so `/session new`
-		// re-keys the sticky credential and the wire threadId together.
-		// `|| undefined` keeps AuthStorage's sticky key absent rather than "".
 		getSessionId = () => ctx.sessionManager.getSessionId() || undefined;
 		projectSlug = createHash("sha256").update(ctx.cwd).digest("hex").slice(0, 10);
+
+		if (authStorage === undefined) return;
+		// SAFETY: real AuthStorage instances expose getApiKey and an optional
+		// fetchUsageReports hook; both are probed (isCallable) before use, so
+		// absent hooks degrade to the unwrapped storage path.
+		const raw = authStorage as AuthStorage & {
+			fetchUsageReports?: (o?: {
+				baseUrlResolver?: (p: string) => string | undefined;
+				signal?: AbortSignal;
+			}) => Promise<UsageReport[] | null>;
+		};
+		if (!isCallable(raw.fetchUsageReports)) return;
+		if (wrappedStorages.has(raw)) return;
+		const orig = raw.fetchUsageReports.bind(raw);
+		raw.fetchUsageReports = async (options?: {
+			baseUrlResolver?: (provider: string) => string | undefined;
+			signal?: AbortSignal;
+		}): Promise<UsageReport[] | null> => {
+			const otherReports = await orig(options);
+			let apiKey: string | undefined;
+			try {
+				apiKey = await raw.getApiKey(PROVIDER_ID, getSessionId());
+			} catch {
+				return otherReports;
+			}
+			if (!apiKey) return otherReports;
+			const baseUrl = options?.baseUrlResolver?.(PROVIDER_ID) ?? resolveBaseUrl();
+			let report: UsageReport | null = null;
+			try {
+				report = await fetchCommandCodeUsage({
+					apiKey,
+					baseUrl,
+					sessionId: getSessionId(),
+					projectSlug,
+					signal: options?.signal,
+				});
+			} catch {
+				return otherReports;
+			}
+			return mergeCommandCodeReport(otherReports, report);
+		};
+		wrappedStorages.add(raw);
 	});
 
 	pi.registerProvider(PROVIDER_ID, {
 		baseUrl: resolveBaseUrl(),
 		api: API_ID,
-		// The host owns caching/TTL/fallback and the catalog endpoint is keyless.
 		fetchDynamicModels: () =>
 			fetchCommandCodeModels({
 				url: resolveModelsUrl(),
@@ -36,9 +76,6 @@ export default function commandCodeProvider(pi: ExtensionAPI): void {
 			getSessionId: () => getSessionId(),
 			getProjectSlug: () => projectSlug,
 		}),
-		// streamSimple owns the Authorization header, so no authHeader/apiKey.
-		// Credentials are entirely native: /login appends a key, /logout removes
-		// one, and omp's ApiKeyResolver picks and rotates the bearer.
 		oauth: { name: "Command Code", login: loginWithCommandCode },
 	});
 }

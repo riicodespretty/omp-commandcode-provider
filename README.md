@@ -14,9 +14,13 @@ This repository is a fork of [`metaphorics/oh-my-pi-plugin-command-code`](https:
 - Rotates across stored keys when quota is exhausted and fails fast when all keys are blocked.
 - Backs off on per-second rate limits without rotating keys.
 
+<!-- vale Vale.Terms = NO -->
+
 ## Model catalog discovery and caching
 
 ### Discovery endpoint
+
+<!-- vale Vale.Terms = YES -->
 
 At session start, the plugin queries the keyless discovery endpoint:
 
@@ -48,10 +52,12 @@ Caching is handled by Oh My Pi rather than by the plugin:
 
 - Oh My Pi's `fetchDynamicModels` mechanism runs the fetch through the same SQLite model cache used by built-in providers, with a 24-hour TTL.
 - When a fetch fails or times out, the host serves the cached catalog.
-- The plugin maintains no cache file or local persistence of its own.
-- To pick up a refreshed catalog before the TTL expires, restart omp. Provider registrations are drained once when the process initializes its session, so the host does not support live in-session catalog re-registration.
+
+<!-- vale Vale.Terms = NO -->
 
 ### Model capabilities and fallback
+
+<!-- vale Vale.Terms = YES -->
 
 The discovery endpoint provides only `id`, `name`, and `context_length`. It does not provide `reasoning` or vision flags.
 
@@ -60,33 +66,34 @@ The discovery endpoint provides only `id`, `name`, and `context_length`. It does
 
 Capabilities are transcribed from the model registry bundled in `command-code@1.26.0` and cross-checked against the capability labels on `https://commandcode.ai/docs/reference/cli/models`. An audit corrected 11 wrong `reasoning` flags (`moonshotai/Kimi-K3`, `moonshotai/Kimi-K2.7-Code`, `moonshotai/Kimi-K2.7-Code-Highspeed`, `MiniMaxAI/MiniMax-M3`, `Qwen/Qwen3.7-Max`, `Qwen/Qwen3.7-Plus`, `Qwen/Qwen3.7-Flash`, `stepfun/Step-3.5-Flash`, `tencent/hy3-paid`, `nvidia/nemotron-3-ultra-550b-a55b`, and `thinkingmachines/inkling-small`) and added 4 missing models (`zai-org/GLM-5.3`, `google/gemini-3.7-flash`, `xai/grok-4.6`, and `Qwen/Qwen3.8-27B`).
 
-Two model IDs resolve against a single source: `Qwen/Qwen3.8-27B` postdates the bundled registry and takes its capabilities from the documented label "Text input, Vision, Reasoning"; `claude-sonnet-4-6` has an explicit effort list (`low`, `medium`, `high`, `xhigh`, `max`) in the bundle and in the vendor reference while the documentation label omits reasoning, so it is recorded as reasoning.
-
-Reasoning effort levels are not modelled. The plugin's stream only sends `low`, `medium`, or `high`, while the vendor lists `xhigh` and `max` for some models, so no per-model thinking-effort map is advertised.
+Two model IDs resolve against a single source. `Qwen/Qwen3.8-27B` postdates the bundled registry and takes its capabilities from the documented label "Text input, Vision, Reasoning." `claude-sonnet-4-6` has an explicit effort list (`low`, `medium`, `high`, `xhigh`, `max`) in the bundle and in the vendor reference while the documentation label omits reasoning, so it is recorded as reasoning.
+<!-- vale Vale.Terms = NO -->
 
 ## Model pricing
 
+<!-- vale Vale.Terms = YES -->
+
 The discovery endpoint publishes no pricing metadata. Rates are transcribed from the two vendor documentation pages in `PRICING_SOURCE_URLS` (`https://commandcode.ai/models` and `https://commandcode.ai/docs/resources/pricing-limits`) and stamped with `PRICING_VERIFIED_ON` (`2026-08-19`).
 
-All rates are in USD per million tokens, matching the unit Oh My Pi expects. The vendor resolves running promotions into its advertised price list, so a discounted model is recorded at its active promotional rate. A model ID that the pricing table does not carry falls back to zero, which Oh My Pi's model browser renders as "free". When new models are added upstream, the pricing table requires an update before model costs display accurately.
+All rates are in USD per million tokens, matching the unit Oh My Pi expects. The vendor resolves running promotions into its advertised price list, so a discounted model is recorded at its active promotional rate. A model ID that the pricing table does not carry falls back to zero, which Oh My Pi's model browser renders as "free." When new models are added upstream, the pricing table requires an update before model costs display accurately.
 
 Oh My Pi bills from a single flat rate per model and supports no context-length tiers or time-of-day schedules. The table records the entry tier and the published default rate for each model. The vendor's usage page remains the authoritative source for actual billing.
 
 ### Rates that vary
 
-| model | recorded | variation |
-|---|---|---|
-| `deepseek/deepseek-v4-flash` | 0.22 / 0.66 / 0.007 | off-peak, 17 h a day; peak 0.44 / 1.32 at 01–04 and 06–10 UTC |
-| `deepseek/deepseek-v4-pro` | 0.66 / 1.98 / 0.022 | off-peak, 17 h a day; peak 1.32 / 3.96 at 01–04 and 06–10 UTC |
-| `Qwen/Qwen3.7-Flash` | 0.03 / 0.13 / 0.006 / 0.038 | higher tiers above 32K and above 256K input tokens |
-| `Qwen/Qwen3.7-Plus` | 0.4 / 1.6 / 0.08 / 0.5 | higher tier above 256K input tokens |
-| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2 | higher tier above 272K input tokens |
-| `google/gemini-3.7-flash` | 0.75 / 3.75 / 0.075 / 0.04167 | 50% promotion, ends 2026-12-31; list 1.5 / 7.5 / 0.15 / 0.08334 |
-| `MiniMaxAI/MiniMax-M3` | 0.3 / 1.2 / 0.06 | 50% promotion; list 0.6 / 2.4 / 0.12 |
-| `xiaomi/mimo-v2.5` | 0.14 / 0.28 / 0.0028 | 98% discount; list 0.8 / 4 / 0.16 |
-| `xiaomi/mimo-v2.5-pro` | 0.435 / 0.87 / 0.0036 | 99% discount; list 2 / 6 / 0.4 |
-| `meta/muse-spark-1.2-contributor` | 0.1 / 0.2 / 0.002 | Muse Spark 1.2 at about 95% off |
-| `poolside/laguna-s-2.1-free` | 0 / 0 / 0 | genuinely free |
+| model                                          | recorded                      | variation                                                       |
+| ---------------------------------------------- | ----------------------------- | --------------------------------------------------------------- |
+| `deepseek/deepseek-v4-flash`                   | 0.22 / 0.66 / 0.007           | off-peak, 17 h a day, peak 0.44 / 1.32 at 01–04 and 06–10 UTC   |
+| `deepseek/deepseek-v4-pro`                     | 0.66 / 1.98 / 0.022           | off-peak, 17 h a day, peak 1.32 / 3.96 at 01–04 and 06–10 UTC   |
+| `Qwen/Qwen3.7-Flash`                           | 0.03 / 0.13 / 0.006 / 0.038   | higher tiers above 32K and above 256K input tokens              |
+| `Qwen/Qwen3.7-Plus`                            | 0.4 / 1.6 / 0.08 / 0.5        | higher tier above 256K input tokens                             |
+| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2           | higher tier above 272K input tokens                             |
+| `google/gemini-3.7-flash`                      | 0.75 / 3.75 / 0.075 / 0.04167 | 50% promotion, ends 2026-12-31, list 1.5 / 7.5 / 0.15 / 0.08334 |
+| `MiniMaxAI/MiniMax-M3`                         | 0.3 / 1.2 / 0.06              | 50% promotion, list 0.6 / 2.4 / 0.12                            |
+| `xiaomi/mimo-v2.5`                             | 0.14 / 0.28 / 0.0028          | 98% discount, list 0.8 / 4 / 0.16                               |
+| `xiaomi/mimo-v2.5-pro`                         | 0.435 / 0.87 / 0.0036         | 99% discount, list 2 / 6 / 0.4                                  |
+| `meta/muse-spark-1.2-contributor`              | 0.1 / 0.2 / 0.002             | Muse Spark 1.2 at about 95% off                                 |
+| `poolside/laguna-s-2.1-free`                   | 0 / 0 / 0                     | genuinely free                                                  |
 
 ## Install
 
@@ -94,7 +101,7 @@ Oh My Pi bills from a single flat rate per model and supports no context-length 
 omp plugin install https://github.com/riicodespretty/omp-commandcode-provider
 ```
 
-The package is not published to npm; install it from this repository.
+The package is not published to npm. Install it from this repository.
 
 ## Getting an API key
 
@@ -113,7 +120,7 @@ Run `/login` again with a different key to add another key to the provider's cre
 
 ## `/logout`
 
-Run `/logout` and select **Command Code** to list stored keys and remove one. Rows are labelled `API key #<id>`, with the active credential listed first.
+Run `/logout` and select **Command Code** to list stored keys and remove one. Rows are labeled `API key #<id>`, with the active credential listed first.
 
 ## Rotation behavior
 
@@ -122,19 +129,40 @@ Every model request resolves its API key through omp's `ApiKeyResolver`, which s
 - **Quota exhausted** (insufficient credits, `RATE_LIMITED`, or a windowed `429` with `error.rateLimit`): the current key is marked as usage-limited using `authStorage.markUsageLimitReached(...)` with Command Code's reset window. If an unblocked key exists, the request retries with that key (capped at four quota failures per call, allowing up to three rotations). If all keys are blocked, the turn fails immediately with the count of blocked keys and the earliest reset time.
 - **Per-second rate limit** (a `429` without `error.rateLimit`, or `rate_limit_error`): the request backs off exponentially and retries with the same key. No rotation occurs.
 - **Bad key** (`401` Unauthorized): the resolver executes its refresh-then-rotate steps and retries as soon as a different key is available.
-- **Other errors**: HTTP `429` and `5xx` errors are retried once; other failures terminate the turn.
+- **Other errors**: HTTP `429` and `5xx` errors are retried once. Other failures terminate the turn.
 
 Once streaming has begun on a turn, any subsequent failure is treated as a terminal error rather than retried, preventing duplicated output.
 
+## `/usage`
+
+The plugin feeds the host's built-in `/usage` command with real Command Code account usage. When the session starts, the plugin wraps the host's `fetchUsageReports` on the auth storage instance. The wrapper resolves a stored Command Code API key, queries the account, and appends a `commandcode` usage report to whatever the host already reports.
+
+The report is built from four gateway endpoints:
+
+| Endpoint                                                   | Purpose                                                                |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `GET /alpha/whoami`                                        | Resolves the account's org ID and login.                               |
+| `GET /alpha/billing/credits?orgId=<id>`                    | Current monthly, purchased, and free credit balances plus the plan ID. |
+| `GET /alpha/billing/subscriptions?orgId=<id>`              | Billing period start and end.                                          |
+| `GET /alpha/usage/summary?orgId=<id>&since=<period start>` | USD cost accumulated since the period start.                           |
+
+The report renders:
+
+- **Command Code Credits** — the combined balance (monthly plus purchased plus free), the cost spent since the billing period started, and a used fraction. The status is `ok` below 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
+- **Plan** — the monthly credit limit for the active plan, when the plan is known.
+- **Usage since period start** — the accumulated USD cost, with the top models by cost when the summary provides them.
+
+Every request uses the resolved base URL and the same headers as model traffic, forwards the host's abort signal, and runs through the host credential store. Any failed request degrades to no report rather than an error: `/usage` then falls back to the host's session token tallies, which the plugin's per-turn cost tracking (`readWireUsage` in `src/stream.ts`) feeds from the gateway's `finish` event.
+
 ## Environment variables
 
-| Variable | Purpose |
-|---|---|
-| `COMMANDCODE_MODELS_URL` | Override the model discovery URL. Defaults to `<base_url>/provider/v1/models`. |
-| `COMMANDCODE_MODELS_TIMEOUT_MS` | Timeout for model discovery requests in milliseconds. Defaults to `10000` (10 seconds). |
-| `COMMANDCODE_API_ENV` | Select the gateway host: `prod` (default) &rarr; `https://api.commandcode.ai`, `staging` &rarr; `https://staging-api.commandcode.ai`, `local` &rarr; `http://localhost:9090`. Unknown or unset values fall back to `prod`. |
-| `COMMANDCODE_API_URL` | Override the base URL entirely. Active only when `COMMANDCODE_SANDBOX` is `true`. |
-| `COMMANDCODE_SANDBOX` | Set to `true` to allow `COMMANDCODE_API_URL` to take effect. |
+| Variable                        | Purpose                                                                                                                                                                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMMANDCODE_MODELS_URL`        | Override the model discovery URL. Defaults to `<base_url>/provider/v1/models`.                                                                                                                                             |
+| `COMMANDCODE_MODELS_TIMEOUT_MS` | Timeout for model discovery requests in milliseconds. Defaults to `10000` (10 seconds).                                                                                                                                    |
+| `COMMANDCODE_API_ENV`           | Select the gateway host: `prod` (default) &rarr; `https://api.commandcode.ai`, `staging` &rarr; `https://staging-api.commandcode.ai`, `local` &rarr; `http://localhost:9090`. Unknown or unset values fall back to `prod`. |
+| `COMMANDCODE_API_URL`           | Override the base URL entirely. Active only when `COMMANDCODE_SANDBOX` is `true`.                                                                                                                                          |
+| `COMMANDCODE_SANDBOX`           | Set to `true` to allow `COMMANDCODE_API_URL` to take effect.                                                                                                                                                               |
 
 ## Notes
 

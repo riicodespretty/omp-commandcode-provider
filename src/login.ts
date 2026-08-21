@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CALLBACK_PORTS, resolveBaseUrl, STUDIO_AUTH_URL, sanitizeApiKey } from "./api";
+import { isJsonString, isObjectLike, type JsonObject } from "./guards";
 
 /**
  * Run the Command Code login flow.
@@ -108,11 +109,17 @@ export async function validateApiKey(
 	if (res.status !== 200) {
 		throw new Error(`Command Code rejected that API key (HTTP ${res.status})`);
 	}
-	const body = (await res.json()) as { success?: unknown; user?: { userName?: string } };
+	// SAFETY: res.json() resolves to parsed JSON; the whoami shape is a data
+	// envelope carrying `success` and an optional `user`, verified below.
+	const body = (await res.json()) as {
+		success?: unknown;
+		user?: { userName?: string };
+	};
 	if (body.success !== true) {
 		throw new Error(`Command Code rejected that API key (HTTP ${res.status})`);
 	}
-	return { userName: body.user?.userName, keyName: undefined };
+	const user = isObjectLike(body.user) ? body.user : undefined;
+	return { userName: isJsonString(user?.userName) ? user.userName : undefined, keyName: undefined };
 }
 
 function handleCallback(
@@ -134,12 +141,11 @@ function handleCallback(
 		res.end();
 	});
 	req.on("end", () => {
-		let payload: { apiKey?: string; state?: string };
+		let payload: JsonObject;
 		try {
-			payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
-				apiKey?: string;
-				state?: string;
-			};
+			// SAFETY: the callback body is client JSON; parse first, then read
+			// fields only through the object/string guards below.
+			payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonObject;
 		} catch {
 			res.writeHead(400, { "Content-Type": "text/plain" });
 			res.end("Invalid JSON");
@@ -153,7 +159,7 @@ function handleCallback(
 			return;
 		}
 
-		const key = typeof payload.apiKey === "string" ? payload.apiKey : "";
+		const key = isJsonString(payload.apiKey) ? payload.apiKey : "";
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(
 			"<!doctype html><html><body><h2>Command Code login successful</h2>" +

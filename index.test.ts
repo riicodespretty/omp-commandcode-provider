@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import type {
 	Api,
 	ApiKeyResolveContext,
@@ -10,6 +10,7 @@ import type {
 	Model,
 	StoredAuthCredential,
 	UsageLimitMarkResult,
+	UsageReport,
 } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 
@@ -33,6 +34,17 @@ import {
 import { capabilitiesForModel, DEFAULT_MODEL_ID, MODEL_CAPABILITIES } from "./src/models";
 import { costForModel, MODEL_COSTS, ZERO_COST } from "./src/pricing";
 import { createCommandCodeStream } from "./src/stream";
+import {
+	PLAN_NAMES,
+	buildUsageReport,
+	fetchCommandCodeUsage,
+	fetchCommandCodeUsageReports,
+	mergeCommandCodeReport,
+	parseCredits,
+	parseSubscription,
+	parseSummary,
+	parseWhoami,
+} from "./src/commandcode-usage";
 
 /* ------------------------------------------------------------------ *
  * Test helpers
@@ -45,7 +57,7 @@ function makeModel(
 	return {
 		id: overrides.id ?? "deepseek/deepseek-v4-flash",
 		name: "test model",
-		api: "commandcode-generate" as Api,
+		api: "commandcode-generate",
 		provider: "commandcode",
 		baseUrl: "https://api.commandcode.ai",
 		reasoning: overrides.reasoning ?? false,
@@ -117,25 +129,96 @@ async function finalMessage(stream: {
 	return stream.result();
 }
 
+/** True for a plain string request target. */
+function isStringUrl(value: URL | RequestInfo): value is string {
+	return Object.prototype.toString.call(value) === "[object String]";
+}
+
+/** True when a fetch body is a plain string. */
+function isBodyString(value: BodyInit | null | undefined): value is string {
+	return Object.prototype.toString.call(value) === "[object String]";
+}
+
+/** The URL string of a fetch input, without stringifying Request objects. */
+function urlOf(input: URL | RequestInfo): string {
+	if (input instanceof URL) return input.href;
+	if (isStringUrl(input)) return input;
+	return input.url;
+}
+
+/** A single-assertion typed factory for fetch-like fixtures. */
+function asFetchImpl(
+	fn: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>,
+): typeof fetch {
+	// SAFETY: the fixture is a faithful fetch substitute for the exercised
+	// call sites; the cast bridges only the preconnect/static surface.
+	return fn as typeof fetch;
+}
+
+/** A single-assertion typed factory for AuthStorage-shaped fixtures. */
+function asAuthStorage<T extends object>(v: T): T & AuthStorage {
+	// SAFETY: the fixture implements every AuthStorage member the exercised
+	// path touches; the cast supplies the members the path never calls.
+	return v as T & AuthStorage;
+}
+
+/** A single-assertion typed factory for ExtensionAPI-shaped fixtures. */
+function asExtensionApi<T extends object>(v: T): T & ExtensionAPI {
+	// SAFETY: the fixture implements every ExtensionAPI member the plugin
+	// calls; the cast supplies the members the plugin never touches.
+	return v as T & ExtensionAPI;
+}
+
 /** A recording fetch that routes by Authorization bearer. */
-function fetchByBearer(routes: Record<string, () => Response>): {
+interface FetchRecorder {
 	fetch: typeof fetch;
 	calls: { auth: string; body: string }[];
-} {
+}
+
+function fetchByBearer(routes: Record<string, () => Response>): FetchRecorder {
 	const calls: { auth: string; body: string }[] = [];
 	const fn: typeof fetch = Object.assign(
 		async (input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+			// SAFETY: fetch accepts plain objects for headers; the recorder
+			// reads only the Authorization entry it wrote.
 			const headers = init?.headers as Record<string, string> | undefined;
 			const auth = headers?.Authorization ?? "";
-			const bodyText = typeof init?.body === "string" ? init.body : "";
+			const rawBody = init?.body;
+			const bodyText = isBodyString(rawBody) ? rawBody : "";
 			calls.push({ auth, body: bodyText });
 			const factory = routes[auth];
-			if (!factory) throw new Error(`unexpected bearer ${auth} for ${String(input)}`);
+			if (!factory) throw new Error(`unexpected bearer ${auth} for ${urlOf(input)}`);
 			return factory();
 		},
 		{ preconnect: () => undefined },
 	);
 	return { fetch: fn, calls };
+}
+
+/** Options the stream forwards to markUsageLimitReached. */
+interface MarkUsageOptions {
+	retryAfterMs?: number;
+	baseUrl?: string;
+	modelId?: string;
+	apiKey?: string;
+	credentialId?: number;
+	signal?: AbortSignal;
+}
+
+/** Options the stream forwards to rotateSessionCredential. */
+interface RotateOptions {
+	error?: unknown;
+	modelId?: string;
+	apiKey?: string;
+	credentialId?: number;
+	signal?: AbortSignal;
+}
+
+/** Options the stream forwards to resolver(). */
+interface ResolverOptions {
+	sessionId?: string;
+	baseUrl?: string;
+	modelId?: string;
 }
 
 /** The subset of AuthStorage the stream exercises. Test double for a large
@@ -145,15 +228,15 @@ interface StreamAuthStorage {
 	markUsageLimitReached(
 		provider: string,
 		sessionId: string | undefined,
-		options?: unknown,
+		options?: MarkUsageOptions,
 	): Promise<UsageLimitMarkResult>;
 	rotateSessionCredential(
 		provider: string,
 		sessionId: string | undefined,
-		options?: unknown,
+		options?: RotateOptions,
 	): Promise<boolean>;
 	listStoredCredentials(provider?: string): StoredAuthCredential[];
-	resolver(provider: string, options?: unknown): ApiKeyResolver;
+	resolver(provider: string, options?: ResolverOptions): ApiKeyResolver;
 }
 
 /** A stub AuthStorage whose getApiKey yields keys in order, with live call counters. */
@@ -196,9 +279,13 @@ function stubAuthStorage(opts: {
 				return base.getApiKey(PROVIDER_ID, undefined);
 			},
 	};
+	// SAFETY: the stub implements every AuthStorage member the stream
+	// touches; the cast supplies the unrelated members for the large interface.
 	const stub = base as AuthStorage;
 	Object.defineProperty(stub, "markCalls", { get: () => counts.mark });
 	Object.defineProperty(stub, "rotateCalls", { get: () => counts.rotate });
+	// SAFETY: the two defined properties above extend the stub with the
+	// observable counters the assertions read; no other member is added.
 	return stub as AuthStorage & { markCalls: number; rotateCalls: number };
 }
 
@@ -421,25 +508,41 @@ describe("catalog — modelsFromApiResponse", () => {
 	});
 
 	test("throws on non-object body", () => {
-		expect(() => modelsFromApiResponse(null)).toThrow();
-		expect(() => modelsFromApiResponse("string")).toThrow();
-		expect(() => modelsFromApiResponse(123)).toThrow();
-		expect(() => modelsFromApiResponse(undefined)).toThrow();
+		expect(() => modelsFromApiResponse(null)).toThrow(/Expected models response to be an object/);
+		expect(() => modelsFromApiResponse("string")).toThrow(
+			/Expected models response to be an object/,
+		);
+		expect(() => modelsFromApiResponse(123)).toThrow(/Expected models response to be an object/);
+		expect(() => modelsFromApiResponse(undefined)).toThrow(
+			/Expected models response to be an object/,
+		);
 	});
 
 	test("throws when object is not list", () => {
-		expect(() => modelsFromApiResponse({ object: "model", data: [] })).toThrow();
-		expect(() => modelsFromApiResponse({ object: "error", data: [] })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "model", data: [] })).toThrow(
+			/Expected models response object to be 'list'/,
+		);
+		expect(() => modelsFromApiResponse({ object: "error", data: [] })).toThrow(
+			/Expected models response object to be 'list'/,
+		);
 	});
 
 	test("throws on non-array data", () => {
-		expect(() => modelsFromApiResponse({ object: "list", data: null })).toThrow();
-		expect(() => modelsFromApiResponse({ object: "list", data: "not-an-array" })).toThrow();
-		expect(() => modelsFromApiResponse({ object: "list", data: {} })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "list", data: null })).toThrow(
+			/Expected models response data to be an array/,
+		);
+		expect(() => modelsFromApiResponse({ object: "list", data: "not-an-array" })).toThrow(
+			/Expected models response data to be an array/,
+		);
+		expect(() => modelsFromApiResponse({ object: "list", data: {} })).toThrow(
+			/Expected models response data to be an array/,
+		);
 	});
 
 	test("throws on empty data array", () => {
-		expect(() => modelsFromApiResponse({ object: "list", data: [] })).toThrow();
+		expect(() => modelsFromApiResponse({ object: "list", data: [] })).toThrow(
+			/Expected models response data array to not be empty/,
+		);
 	});
 
 	test("throws when entry is missing name or id", () => {
@@ -448,13 +551,13 @@ describe("catalog — modelsFromApiResponse", () => {
 				object: "list",
 				data: [{ id: "model-1", context_length: 32_000 }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a non-empty string 'name'/);
 		expect(() =>
 			modelsFromApiResponse({
 				object: "list",
 				data: [{ name: "Model 1", context_length: 32_000 }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a non-empty string 'id'/);
 	});
 
 	test("throws when entry has zero or non-numeric context_length", () => {
@@ -463,25 +566,25 @@ describe("catalog — modelsFromApiResponse", () => {
 				object: "list",
 				data: [{ id: "m1", name: "M1", context_length: 0 }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a positive finite 'context_length'/);
 		expect(() =>
 			modelsFromApiResponse({
 				object: "list",
 				data: [{ id: "m1", name: "M1", context_length: -100 }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a positive finite 'context_length'/);
 		expect(() =>
 			modelsFromApiResponse({
 				object: "list",
 				data: [{ id: "m1", name: "M1", context_length: "32000" }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a positive finite 'context_length'/);
 		expect(() =>
 			modelsFromApiResponse({
 				object: "list",
 				data: [{ id: "m1", name: "M1", context_length: Number.NaN }],
 			}),
-		).toThrow();
+		).toThrow(/Expected model entry at index 0 to have a positive finite 'context_length'/);
 	});
 });
 
@@ -500,14 +603,18 @@ describe("catalog — fetchCommandCodeModels", () => {
 		let capturedUrl: string | URL | Request = "";
 		let capturedHeaders: Record<string, string> | undefined;
 
-		const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
+		const fetchImpl = asFetchImpl(async (input: URL | RequestInfo, init?: RequestInit) => {
+			// SAFETY: the catalog always calls fetch with a string URL, so the
+			// recorder's captured target is the string form.
 			capturedUrl = input as string;
+			// SAFETY: fetch accepts plain objects for headers; the recorder
+			// reads only the accept entry the catalog wrote.
 			capturedHeaders = init?.headers as Record<string, string> | undefined;
 			return new Response(JSON.stringify(payload), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
-		}) as unknown as typeof fetch;
+		});
 
 		const models = await fetchCommandCodeModels({ fetchImpl });
 		expect(models).toHaveLength(1);
@@ -517,24 +624,24 @@ describe("catalog — fetchCommandCodeModels", () => {
 	});
 
 	test("500 response rejects with a message containing the status", async () => {
-		const fetchImpl = (async () => {
+		const fetchImpl = asFetchImpl(async () => {
 			return new Response("Internal Server Error", {
 				status: 500,
 				statusText: "Internal Server Error",
 			});
-		}) as unknown as typeof fetch;
+		});
 
 		await expect(fetchCommandCodeModels({ fetchImpl })).rejects.toThrow(/500/);
 	});
 
 	test("hanging fetch with timeoutMs rejects with timeout message", async () => {
-		const fetchImpl = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+		const fetchImpl = asFetchImpl(async (_input: URL | RequestInfo, init?: RequestInit) => {
 			return new Promise<Response>((_resolve, reject) => {
 				init?.signal?.addEventListener("abort", () => {
 					reject(new DOMException("The operation was aborted", "TimeoutError"));
 				});
 			});
-		}) as unknown as typeof fetch;
+		});
 
 		await expect(fetchCommandCodeModels({ fetchImpl, timeoutMs: 5 })).rejects.toThrow(
 			/timed out|5ms/i,
@@ -545,13 +652,13 @@ describe("catalog — fetchCommandCodeModels", () => {
 		const controller = new AbortController();
 		controller.abort();
 
-		const fetchImpl = (async () => {
+		const fetchImpl = asFetchImpl(async () => {
 			return new Response(JSON.stringify({ object: "list", data: [] }), { status: 200 });
-		}) as unknown as typeof fetch;
+		});
 
-		await expect(
-			fetchCommandCodeModels({ fetchImpl, signal: controller.signal }),
-		).rejects.toThrow();
+		await expect(fetchCommandCodeModels({ fetchImpl, signal: controller.signal })).rejects.toThrow(
+			/aborted/i,
+		);
 	});
 });
 
@@ -626,7 +733,8 @@ describe("pricing", () => {
 	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
 		for (const cost of Object.values(MODEL_COSTS)) {
 			for (const field of ["input", "output", "cacheRead", "cacheWrite"] as const) {
-				expect(typeof cost[field]).toBe("number");
+				// SAFETY: Number.isFinite is a stricter check than typeof — it
+				// rejects NaN/Infinity, which a bare "number" tag would admit.
 				expect(Number.isFinite(cost[field])).toBe(true);
 				expect(cost[field]).toBeGreaterThanOrEqual(0);
 			}
@@ -814,10 +922,10 @@ describe("stream — all keys exhausted fails fast with reset time", () => {
 		const errEvent = events.find((e) => e.type === "error");
 
 		expect(errEvent?.type).toBe("error");
-		if (errEvent?.type === "error") {
-			expect(errEvent.error.errorMessage).toContain("quota exhausted");
-			expect(errEvent.error.errorMessage).toContain(new Date(resetAt).toISOString());
-		}
+		// SAFETY: the previous assertion guarantees errEvent is the error event,
+		// so its errorMessage field is defined on this branch.
+		expect(errEvent?.error.errorMessage).toContain("quota exhausted");
+		expect(errEvent?.error.errorMessage).toContain(new Date(resetAt).toISOString());
 		expect(auth.markCalls).toBe(1);
 		expect(calls).toHaveLength(1);
 	});
@@ -834,6 +942,8 @@ describe("stream — rate-limit backs off without rotating", () => {
 		const calls: { auth: string }[] = [];
 		const fetchImpl: typeof fetch = Object.assign(
 			async (_input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				// SAFETY: fetch accepts plain objects for headers; the recorder
+				// reads only the Authorization entry it wrote.
 				const headers = init?.headers as Record<string, string> | undefined;
 				calls.push({ auth: headers?.Authorization ?? "" });
 				count += 1;
@@ -935,22 +1045,47 @@ describe("stream — native ApiKeyResolver", () => {
  * 9. extension registration
  * ------------------------------------------------------------------ */
 
-/** The subset of ExtensionAPI the plugin's factory touches. */
-interface FakeExtensionAPI {
-	on(event: string, handler: (e: unknown, ctx: unknown) => void): void;
-	registerProvider(name: string, config: ProviderConfig): void;
-	registerCommand(name: string, options: unknown): void;
+/** A session_start handler with the subset of context the plugin reads. */
+interface SessionContext {
+	modelRegistry: { authStorage: AuthStorage | undefined };
+	sessionManager: { getSessionId(): string | undefined };
+	cwd: string;
 }
 
-function fakeExtensionApi(): {
+/** Event handler signature the plugin's session_start registration uses. */
+type SessionHandler = (e: undefined, ctx: SessionContext) => void;
+
+/** The subset of ExtensionAPI the plugin's factory touches. */
+interface FakeExtensionAPI {
+	on(event: string, handler: SessionHandler): void;
+	registerProvider(name: string, config: ProviderConfig): void;
+	registerCommand(name: string, options: CommandOptions): void;
+}
+
+/** The registerCommand options shape the plugin's factory passes through. */
+interface CommandOptions {
+	description?: string;
+	handler(...args: unknown[]): void;
+}
+
+/** Provider identity captured by the fake registration. */
+interface ProviderCapture {
+	name?: string;
+	config?: ProviderConfig;
+}
+
+/** Result of {@link fakeExtensionApi}. */
+interface FakeExtensionApiResult {
 	pi: ExtensionAPI;
-	provider: { name?: string; config?: ProviderConfig };
+	provider: ProviderCapture;
 	commands: string[];
-	sessionStart(): ((e: unknown, ctx: unknown) => void) | undefined;
-} {
-	const provider: { name?: string; config?: ProviderConfig } = {};
+	sessionStart: () => SessionHandler | undefined;
+}
+
+function fakeExtensionApi(): FakeExtensionApiResult {
+	const provider: ProviderCapture = {};
 	const commands: string[] = [];
-	let onSessionStart: ((e: unknown, ctx: unknown) => void) | undefined;
+	let onSessionStart: SessionHandler | undefined;
 	const base: FakeExtensionAPI = {
 		on: (event, handler) => {
 			if (event === "session_start") onSessionStart = handler;
@@ -963,7 +1098,9 @@ function fakeExtensionApi(): {
 			commands.push(name);
 		},
 	};
-	return { pi: base as ExtensionAPI, provider, commands, sessionStart: () => onSessionStart };
+	// SAFETY: the stub implements the three ExtensionAPI members the plugin
+	// calls; the cast supplies the members the plugin never touches.
+	return { pi: asExtensionApi(base), provider, commands, sessionStart: () => onSessionStart };
 }
 
 describe("extension registration", () => {
@@ -979,9 +1116,18 @@ describe("extension registration", () => {
 		expect(provider.name).toBe(PROVIDER_ID);
 		expect(provider.config?.api).toBe("commandcode-generate");
 		expect(provider.config?.oauth?.name).toBe("Command Code");
-		expect(typeof provider.config?.oauth?.login).toBe("function");
+		const oauth = provider.config?.oauth;
+		// SAFETY: Object.prototype.toString is the box-safe string-tag check;
+		// the plugin's oauth login is always an async function after registration.
+		expect(oauth ? Object.prototype.toString.call(oauth.login.bind(oauth)) : undefined).toBe(
+			"[object AsyncFunction]",
+		);
 		expect(provider.config?.models).toBeUndefined();
-		expect(typeof provider.config?.fetchDynamicModels).toBe("function");
+		// SAFETY: Object.prototype.toString is the box-safe string-tag check;
+		// the plugin's dynamic-models fetcher is always a function.
+		expect(Object.prototype.toString.call(provider.config?.fetchDynamicModels)).toBe(
+			"[object Function]",
+		);
 		expect(commands).toEqual([]);
 
 		const sampleCatalog = {
@@ -1032,6 +1178,8 @@ describe("extension registration", () => {
 		const seen: Record<string, string>[] = [];
 		globalThis.fetch = Object.assign(
 			async (_input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				// SAFETY: fetch accepts plain objects for headers; the recorder
+				// reads only the x-session-id entry the stream wrote.
 				seen.push((init?.headers as Record<string, string>) ?? {});
 				return makeResponse([chunkA, chunkB]);
 			},
@@ -1049,5 +1197,644 @@ describe("extension registration", () => {
 
 		expect(events[events.length - 1]?.type).toBe("done");
 		expect(seen[0]?.["x-session-id"]).toBe("sess-native");
+	});
+});
+
+describe("commandcode-usage — parseWhoami", () => {
+	const whoamiFixture = {
+		data: { user: { userName: "alice" }, org: { id: "org_123", login: "my-org" } },
+	};
+	test("parses whoami fixture", () => {
+		expect(parseWhoami(whoamiFixture)).toEqual({
+			orgId: "org_123",
+			orgLogin: "my-org",
+			userName: "alice",
+		});
+	});
+	test("returns null when org id missing", () => {
+		expect(parseWhoami({ data: { org: { login: "x" } } })).toBeNull();
+		expect(parseWhoami({ data: { user: { userName: "alice" } } })).toBeNull();
+		expect(parseWhoami(null)).toBeNull();
+		expect(parseWhoami({})).toBeNull();
+	});
+	test("handles missing optional fields", () => {
+		expect(parseWhoami({ data: { org: { id: "org_1" } } })).toEqual({
+			orgId: "org_1",
+			orgLogin: undefined,
+			userName: undefined,
+		});
+	});
+});
+
+describe("commandcode-usage — parseCredits", () => {
+	const creditsFixture = {
+		data: {
+			credits: {
+				monthlyCredits: 100,
+				purchasedCredits: 20,
+				freeCredits: 5,
+				planId: "individual-plus",
+			},
+		},
+	};
+	test("parses credits fixture", () => {
+		expect(parseCredits(creditsFixture)).toEqual({
+			monthlyCredits: 100,
+			purchasedCredits: 20,
+			freeCredits: 5,
+			planId: "individual-plus",
+		});
+	});
+	test("returns null when credits absent", () => {
+		expect(parseCredits({ data: {} })).toBeNull();
+		expect(parseCredits(null)).toBeNull();
+		expect(parseCredits({ data: { credits: {} } })).toBeNull();
+	});
+	test("defaults missing numeric fields to 0", () => {
+		expect(parseCredits({ data: { credits: { monthlyCredits: 50 } } })).toEqual({
+			monthlyCredits: 50,
+			purchasedCredits: 0,
+			freeCredits: 0,
+			planId: undefined,
+		});
+	});
+});
+
+describe("commandcode-usage — parseSubscription", () => {
+	const subFixture = {
+		data: {
+			data: {
+				planId: "individual-plus",
+				status: "active",
+				currentPeriodStart: "2026-08-01T00:00:00Z",
+				currentPeriodEnd: "2026-09-01T00:00:00Z",
+			},
+		},
+	};
+	test("parses subscription fixture", () => {
+		expect(parseSubscription(subFixture)).toEqual({
+			planId: "individual-plus",
+			status: "active",
+			currentPeriodStart: "2026-08-01T00:00:00Z",
+			currentPeriodEnd: "2026-09-01T00:00:00Z",
+		});
+	});
+	test("returns null when empty", () => {
+		expect(parseSubscription({ data: {} })).toBeNull();
+		expect(parseSubscription(null)).toBeNull();
+		expect(parseSubscription({ data: { data: {} } })).toBeNull();
+	});
+});
+
+describe("commandcode-usage — parseSummary", () => {
+	test("parses totalCost and ranks costByModel", () => {
+		const raw = {
+			data: {
+				totalCost: 25,
+				costByModel: { "claude-sonnet-4": 15, "gpt-4o": 7, "deepseek-chat": 3, tiny: 0 },
+			},
+		};
+		expect(parseSummary(raw)).toEqual({
+			totalCost: 25,
+			topModels: ["claude-sonnet-4", "gpt-4o", "deepseek-chat"],
+		});
+	});
+	test("parses without costByModel", () => {
+		expect(parseSummary({ data: { totalCost: 12.5 } })).toEqual({
+			totalCost: 12.5,
+			topModels: undefined,
+		});
+	});
+	test("returns null when totalCost missing", () => {
+		expect(parseSummary({ data: {} })).toBeNull();
+		expect(parseSummary(null)).toBeNull();
+		expect(parseSummary({ data: { costByModel: {} } })).toBeNull();
+	});
+	test("limits topModels to 3 sorted by cost", () => {
+		const raw = {
+			data: { totalCost: 10, costByModel: { a: 1, b: 5, c: 3, d: 4, e: 2 } },
+		};
+		expect(parseSummary(raw)?.topModels).toEqual(["b", "d", "c"]);
+	});
+});
+
+describe("commandcode-usage — buildUsageReport", () => {
+	const whoami = { orgId: "org_123", orgLogin: "my-org", userName: "alice" };
+	const credits = {
+		monthlyCredits: 100,
+		purchasedCredits: 20,
+		freeCredits: 5,
+		planId: "individual-plus",
+	};
+	const subscription = {
+		planId: "individual-plus",
+		status: "active",
+		currentPeriodStart: "2026-08-01T00:00:00Z",
+		currentPeriodEnd: "2026-09-01T00:00:00Z",
+	};
+	test("builds credits limit with usedFraction and window", () => {
+		const summary = { totalCost: 25, topModels: ["claude-sonnet-4", "gpt-4o"] };
+		const report = buildUsageReport({ whoami, credits, subscription, summary, fetchedAt: 1_000 });
+		expect(report.provider).toBe(PROVIDER_ID);
+		expect(report.fetchedAt).toBe(1_000);
+		const creditsLimit = report.limits.find((l) => l.id === "commandcode:credits");
+		expect(creditsLimit).toBeDefined();
+		expect(creditsLimit?.amount.used).toBe(25);
+		expect(creditsLimit?.amount.remaining).toBe(125);
+		expect(creditsLimit?.amount.limit).toBe(150);
+		expect(creditsLimit?.amount.usedFraction).toBeCloseTo(25 / 150);
+		expect(creditsLimit?.amount.unit).toBe("usd");
+		expect(creditsLimit?.scope.provider).toBe(PROVIDER_ID);
+		expect(creditsLimit?.scope.shared).toBe(true);
+		expect(creditsLimit?.window?.id).toBe("period");
+		expect(creditsLimit?.window?.resetsAt).toBe(Date.parse("2026-09-01T00:00:00Z"));
+		expect(creditsLimit?.status).toBe("ok");
+	});
+	test("status thresholds: ok, warning, exhausted", () => {
+		const ok = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 90, purchasedCredits: 10, freeCredits: 0 },
+			subscription,
+			summary: { totalCost: 10 },
+			fetchedAt: 1,
+		});
+		expect(ok.limits[0]?.status).toBe("ok");
+		const warning = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 },
+			subscription,
+			summary: { totalCost: 40 },
+			fetchedAt: 1,
+		});
+		expect(warning.limits[0]?.status).toBe("warning");
+		const exhausted = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0 },
+			subscription,
+			summary: { totalCost: 10 },
+			fetchedAt: 1,
+		});
+		expect(exhausted.limits[0]?.status).toBe("exhausted");
+		const unknown = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0 },
+			subscription: null,
+			summary: null,
+			fetchedAt: 1,
+		});
+		expect(unknown.limits[0]?.status).toBe("unknown");
+	});
+	test("adds plan limit when planId known and monthlyCredits > 0", () => {
+		const report = buildUsageReport({ whoami, credits, subscription, summary: null, fetchedAt: 1 });
+		const plan = report.limits.find((l) => l.id === "commandcode:plan:individual-plus");
+		expect(plan).toBeDefined();
+		expect(plan?.label).toBe(`Plan — ${PLAN_NAMES["individual-plus"]}`);
+		expect(plan?.amount.limit).toBe(100);
+	});
+	test("omits plan limit when monthlyCredits is 0 or plan unknown", () => {
+		const noPlan = buildUsageReport({
+			whoami,
+			credits: { monthlyCredits: 0, purchasedCredits: 10, freeCredits: 0 },
+			subscription: null,
+			summary: null,
+			fetchedAt: 1,
+		});
+		expect(noPlan.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(false);
+	});
+	test("adds summary limit and topModels note when totalCost > 0", () => {
+		const report = buildUsageReport({
+			whoami,
+			credits,
+			subscription,
+			summary: { totalCost: 12.5, topModels: ["a", "b"] },
+			fetchedAt: 1,
+		});
+		const summaryLimit = report.limits.find((l) => l.id === "commandcode:summary");
+		expect(summaryLimit?.amount.used).toBe(12.5);
+		expect(summaryLimit?.notes?.[0]).toContain("a");
+	});
+	test("omits summary limit when totalCost is 0 or summary null", () => {
+		const r1 = buildUsageReport({ whoami, credits, subscription, summary: null, fetchedAt: 1 });
+		expect(r1.limits.some((l) => l.id === "commandcode:summary")).toBe(false);
+		const r2 = buildUsageReport({
+			whoami,
+			credits,
+			subscription,
+			summary: { totalCost: 0 },
+			fetchedAt: 1,
+		});
+		expect(r2.limits.some((l) => l.id === "commandcode:summary")).toBe(false);
+	});
+	test("metadata and notes", () => {
+		const report = buildUsageReport({
+			whoami,
+			credits,
+			subscription,
+			summary: null,
+			fetchedAt: 999,
+		});
+		expect(report.metadata?.endpoint).toBe("commandcode");
+		expect(report.metadata?.account).toBe("alice");
+		expect(report.metadata?.planId).toBe("individual-plus");
+		expect(report.notes?.[0]).toContain("Credits are Command Code");
+	});
+	test("falls back to orgLogin then orgId for account label", () => {
+		const r1 = buildUsageReport({
+			whoami: { orgId: "org_1", orgLogin: "my-org" },
+			credits,
+			subscription: null,
+			summary: null,
+			fetchedAt: 1,
+		});
+		expect(r1.metadata?.account).toBe("my-org");
+		const r2 = buildUsageReport({
+			whoami: { orgId: "org_1" },
+			credits,
+			subscription: null,
+			summary: null,
+			fetchedAt: 1,
+		});
+		expect(r2.metadata?.account).toBe("org_1");
+	});
+});
+
+describe("commandcode-usage — fetchCommandCodeUsage", () => {
+	function jsonResponse<T>(body: string | T, status = 200): Response {
+		return new Response(JSON.stringify(body), {
+			status,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+	function makeFetch(
+		routes: Record<string, unknown>,
+		seen: { url: string; signal: AbortSignal | undefined }[] = [],
+	): typeof fetch {
+		return Object.assign(
+			async (input: URL | RequestInfo, init?: RequestInit) => {
+				const url = urlOf(input);
+				// SAFETY: the harness passes an AbortSignal through init.signal;
+				// the recorder asserts on that exact object later.
+				seen.push({ url, signal: init?.signal as AbortSignal | undefined });
+				if (url.includes("/alpha/whoami")) return jsonResponse(routes["whoami"]);
+				if (url.includes("/alpha/billing/credits")) return jsonResponse(routes["credits"]);
+				if (url.includes("/alpha/billing/subscriptions"))
+					return jsonResponse(routes["subscriptions"]);
+				if (url.includes("/alpha/usage/summary"))
+					return jsonResponse(routes["summary"] ?? { data: { totalCost: 0 } });
+				return jsonResponse({}, 404);
+			},
+			{ preconnect: () => undefined },
+		);
+	}
+	test("fetches 4 endpoints and builds report", async () => {
+		const seen: { url: string; signal: AbortSignal | undefined }[] = [];
+		const fetchImpl = makeFetch(
+			{
+				whoami: { data: { user: { userName: "alice" }, org: { id: "org_123", login: "my-org" } } },
+				credits: {
+					data: {
+						credits: {
+							monthlyCredits: 100,
+							purchasedCredits: 20,
+							freeCredits: 5,
+							planId: "individual-plus",
+						},
+					},
+				},
+				subscriptions: {
+					data: {
+						data: {
+							planId: "individual-plus",
+							status: "active",
+							currentPeriodStart: "2026-08-01T00:00:00Z",
+							currentPeriodEnd: "2026-09-01T00:00:00Z",
+						},
+					},
+				},
+				summary: { data: { totalCost: 25, costByModel: { a: 10, b: 5 } } },
+			},
+			seen,
+		);
+		const report = await fetchCommandCodeUsage({
+			apiKey: "user_test",
+			baseUrl: "https://api.commandcode.ai",
+			fetchImpl,
+		});
+		expect(report).not.toBeNull();
+		expect(report?.provider).toBe(PROVIDER_ID);
+		expect(report?.limits.length).toBeGreaterThanOrEqual(1);
+		expect(seen.some((s) => s.url.includes("/alpha/whoami"))).toBe(true);
+		expect(seen.some((s) => s.url.includes("/alpha/billing/credits"))).toBe(true);
+	});
+	test("returns null when whoami fails", async () => {
+		const fetchImpl = makeFetch({
+			whoami: {},
+			credits: { data: { credits: { monthlyCredits: 100 } } },
+			subscriptions: { data: { data: {} } },
+		});
+		expect(
+			await fetchCommandCodeUsage({
+				apiKey: "k",
+				baseUrl: "https://api.commandcode.ai",
+				fetchImpl,
+			}),
+		).toBeNull();
+	});
+	test("returns null when credits fails", async () => {
+		const fetchImpl = makeFetch({
+			whoami: { data: { org: { id: "org_1" } } },
+			credits: {},
+			subscriptions: { data: { data: {} } },
+		});
+		expect(
+			await fetchCommandCodeUsage({
+				apiKey: "k",
+				baseUrl: "https://api.commandcode.ai",
+				fetchImpl,
+			}),
+		).toBeNull();
+	});
+	test("forwards AbortSignal to every request", async () => {
+		const controller = new AbortController();
+		const seen: { url: string; signal: AbortSignal | undefined }[] = [];
+		const fetchImpl = makeFetch(
+			{
+				whoami: { data: { org: { id: "org_1" } } },
+				credits: { data: { credits: { monthlyCredits: 10 } } },
+				subscriptions: { data: { data: { currentPeriodStart: "2026-08-01T00:00:00Z" } } },
+				summary: { data: { totalCost: 1 } },
+			},
+			seen,
+		);
+		await fetchCommandCodeUsage({
+			apiKey: "k",
+			baseUrl: "https://api.commandcode.ai",
+			fetchImpl,
+			signal: controller.signal,
+		});
+		for (const entry of seen) expect(entry.signal).toBe(controller.signal);
+	});
+	test("fetchCommandCodeUsageReports wraps single report", async () => {
+		const fetchImpl = makeFetch({
+			whoami: { data: { org: { id: "org_1" } } },
+			credits: { data: { credits: { monthlyCredits: 10 } } },
+			subscriptions: { data: { data: {} } },
+		});
+		const reports = await fetchCommandCodeUsageReports({
+			apiKey: "k",
+			baseUrl: "https://api.commandcode.ai",
+			fetchImpl,
+		});
+		expect(reports).toHaveLength(1);
+		expect(reports?.[0]?.provider).toBe(PROVIDER_ID);
+	});
+});
+
+describe("commandcode-usage — mergeCommandCodeReport", () => {
+	function fakeReport(provider: string, id: string): UsageReport {
+		return {
+			provider,
+			fetchedAt: 1,
+			limits: [{ id, label: id, scope: { provider }, amount: { unit: "usd" } }],
+		};
+	}
+	test("appends when no existing commandcode report", () => {
+		const other = fakeReport("anthropic", "a:1");
+		const cc = fakeReport(PROVIDER_ID, "commandcode:credits");
+		expect(mergeCommandCodeReport([other], cc)).toEqual([other, cc]);
+	});
+	test("dedupes by provider id — replaces existing commandcode report", () => {
+		const stale = fakeReport(PROVIDER_ID, "commandcode:credits");
+		const other = fakeReport("anthropic", "a:1");
+		const fresh = fakeReport(PROVIDER_ID, "commandcode:credits");
+		const merged = mergeCommandCodeReport([other, stale], fresh);
+		expect(merged).toHaveLength(2);
+		expect(merged?.filter((r) => r.provider === PROVIDER_ID)).toHaveLength(1);
+		expect(merged?.find((r) => r.provider === PROVIDER_ID)).toBe(fresh);
+	});
+	test("returns existing when report is null", () => {
+		const other = fakeReport("anthropic", "a:1");
+		expect(mergeCommandCodeReport([other], null)).toEqual([other]);
+		expect(mergeCommandCodeReport(null, null)).toBeNull();
+	});
+	test("wraps null existing into single-element array", () => {
+		const cc = fakeReport(PROVIDER_ID, "commandcode:credits");
+		expect(mergeCommandCodeReport(null, cc)).toEqual([cc]);
+	});
+});
+
+describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
+	function makeUsageFetch<T>(body: string | T, status = 200): typeof fetch {
+		return Object.assign(
+			async (input: URL | RequestInfo) => {
+				const url = urlOf(input);
+				if (url.includes("/alpha/whoami"))
+					return new Response(
+						JSON.stringify({ data: { org: { id: "org_1" }, user: { userName: "alice" } } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				if (url.includes("/alpha/billing/credits"))
+					return new Response(
+						JSON.stringify({
+							data: { credits: { monthlyCredits: 100, purchasedCredits: 10, freeCredits: 0 } },
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				if (url.includes("/alpha/billing/subscriptions"))
+					return new Response(
+						JSON.stringify({
+							data: {
+								data: {
+									planId: "individual-plus",
+									status: "active",
+									currentPeriodStart: "2026-08-01T00:00:00Z",
+									currentPeriodEnd: "2026-09-01T00:00:00Z",
+								},
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				if (url.includes("/alpha/usage/summary"))
+					return new Response(JSON.stringify(body), {
+						status,
+						headers: { "Content-Type": "application/json" },
+					});
+				return new Response(JSON.stringify({}), { status: 404 });
+			},
+			{ preconnect: () => undefined },
+		);
+	}
+	test("merges commandcode report with other providers and dedupes", async () => {
+		const origReport: UsageReport = { provider: "anthropic", fetchedAt: 1, limits: [] };
+		const staleCC: UsageReport = { provider: PROVIDER_ID, fetchedAt: 1, limits: [] };
+		const storage = asAuthStorage({
+			getApiKey: async () => "user_test",
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => [origReport, staleCC],
+		});
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = makeUsageFetch({ data: { totalCost: 5 } });
+		try {
+			const fakePi = asExtensionApi({
+				on: (event: string, fn: SessionHandler) => {
+					if (event === "session_start")
+						fn(undefined, {
+							modelRegistry: { authStorage: storage },
+							sessionManager: { getSessionId: () => "sess-1" },
+							cwd: "/tmp/cc-test",
+						});
+				},
+				registerProvider: () => {},
+				registerCommand: () => {},
+			});
+			commandCodeProvider(fakePi);
+			const reports = await storage.fetchUsageReports();
+			expect(reports).not.toBeNull();
+			expect(reports?.some((r) => r.provider === "anthropic")).toBe(true);
+			expect(reports?.filter((r) => r.provider === PROVIDER_ID)).toHaveLength(1);
+			expect(reports?.find((r) => r.provider === PROVIDER_ID)?.limits[0]?.id).toBe(
+				"commandcode:credits",
+			);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+	test("preserves other reports when commandcode fetch fails", async () => {
+		const origReport: UsageReport = { provider: "anthropic", fetchedAt: 1, limits: [] };
+		const storage = asAuthStorage({
+			getApiKey: async () => undefined,
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => [origReport],
+		});
+		const fakePi = asExtensionApi({
+			on: (event: string, fn: SessionHandler) => {
+				if (event === "session_start")
+					fn(undefined, {
+						modelRegistry: { authStorage: storage },
+						sessionManager: { getSessionId: () => "sess-1" },
+						cwd: "/tmp/cc-test",
+					});
+			},
+			registerProvider: () => {},
+			registerCommand: () => {},
+		});
+		commandCodeProvider(fakePi);
+		const reports = await storage.fetchUsageReports();
+		expect(reports).toEqual([origReport]);
+	});
+	test("respects baseUrlResolver override", async () => {
+		const seenUrls: string[] = [];
+		const storage = asAuthStorage({
+			getApiKey: async () => "user_test",
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => [],
+		});
+		const customBase = "https://custom.example.com";
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = Object.assign(
+			async (input: URL | RequestInfo) => {
+				seenUrls.push(urlOf(input));
+				const url = urlOf(input);
+				if (url.includes("/alpha/whoami"))
+					return new Response(JSON.stringify({ data: { org: { id: "org_1" } } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				if (url.includes("/alpha/billing/credits"))
+					return new Response(JSON.stringify({ data: { credits: { monthlyCredits: 10 } } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				if (url.includes("/alpha/billing/subscriptions"))
+					return new Response(JSON.stringify({ data: { data: {} } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				return new Response(JSON.stringify({ data: { totalCost: 0 } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
+			{ preconnect: () => undefined },
+		);
+		try {
+			const fakePi = asExtensionApi({
+				on: (event: string, fn: SessionHandler) => {
+					if (event === "session_start")
+						fn(undefined, {
+							modelRegistry: { authStorage: storage },
+							sessionManager: { getSessionId: () => "sess-1" },
+							cwd: "/tmp/cc-test",
+						});
+				},
+				registerProvider: () => {},
+				registerCommand: () => {},
+			});
+			commandCodeProvider(fakePi);
+			await storage.fetchUsageReports({
+				baseUrlResolver: (p: string) => (p === PROVIDER_ID ? customBase : undefined),
+			});
+			expect(seenUrls.some((u) => u.startsWith(customBase))).toBe(true);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+	test("does not re-wrap on second session_start — commandcode fetch runs once per call", async () => {
+		let originCalls = 0;
+		const originReports: UsageReport[] = [{ provider: "anthropic", fetchedAt: 1, limits: [] }];
+		const storage = asAuthStorage({
+			getApiKey: async () => "user_test",
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => {
+				originCalls += 1;
+				return originReports;
+			},
+		});
+		let commandcodeFetches = 0;
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = Object.assign(
+			async (input: URL | RequestInfo) => {
+				commandcodeFetches += 1;
+				const url = urlOf(input);
+				if (url.includes("/alpha/whoami"))
+					return new Response(JSON.stringify({ data: { org: { id: "org_1" } } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				if (url.includes("/alpha/billing/credits"))
+					return new Response(JSON.stringify({ data: { credits: { monthlyCredits: 10 } } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				if (url.includes("/alpha/billing/subscriptions"))
+					return new Response(JSON.stringify({ data: { data: {} } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				return new Response(JSON.stringify({ data: { totalCost: 0 } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
+			{ preconnect: () => undefined },
+		);
+		try {
+			const makePi = (): ExtensionAPI =>
+				asExtensionApi({
+					on: (event: string, fn: SessionHandler) => {
+						if (event === "session_start")
+							fn(undefined, {
+								modelRegistry: { authStorage: storage },
+								sessionManager: { getSessionId: () => "sess-1" },
+								cwd: "/tmp/cc-test",
+							});
+					},
+					registerProvider: () => {},
+					registerCommand: () => {},
+				});
+			commandCodeProvider(makePi());
+			commandCodeProvider(makePi());
+			await storage.fetchUsageReports();
+			expect(originCalls).toBe(1);
+			expect(commandcodeFetches).toBe(3);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 });

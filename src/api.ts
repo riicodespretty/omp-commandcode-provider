@@ -7,6 +7,8 @@
  * `/models` discovery endpoint and no OpenAI/Anthropic wire compatibility.
  */
 
+import { isFiniteJsonNumber, isJsonObject, isJsonString, type JsonObject } from "./guards";
+
 export const PROVIDER_ID = "commandcode";
 export const API_ID = "commandcode-generate";
 export const STUDIO_AUTH_URL = "https://commandcode.ai/studio/auth/cli";
@@ -17,11 +19,11 @@ export const CALLBACK_PORTS = [5959, 5960, 5961, 5962, 5963, 5964, 5965, 5966, 5
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-const ENV_URLS: Record<"local" | "staging" | "prod", string> = {
+const ENV_URLS = {
 	local: "http://localhost:9090",
 	staging: "https://staging-api.commandcode.ai",
 	prod: "https://api.commandcode.ai",
-};
+} as const satisfies Record<"local" | "staging" | "prod", string>;
 
 /**
  * Resolve the Command Code base URL.
@@ -60,10 +62,7 @@ export function sanitizeApiKey(raw: string): string {
  * Build the exact header set the CLI sends on `/alpha/generate`.
  * `x-cli-environment` is `"production"` for prod, otherwise the env name.
  */
-export function buildHeaders(
-	apiKey: string,
-	o: { sessionId: string; projectSlug: string },
-): Record<string, string> {
+export function buildHeaders(apiKey: string, o: { sessionId: string; projectSlug: string }) {
 	const envName = process.env.COMMANDCODE_API_ENV ?? "prod";
 	return {
 		Authorization: `Bearer ${apiKey}`,
@@ -75,7 +74,7 @@ export function buildHeaders(
 		"x-project-slug": o.projectSlug,
 		"x-taste-learning": "false",
 		"x-co-flag": "false",
-	};
+	} satisfies Record<string, string>;
 }
 
 export type Verdict = "quota" | "auth" | "rate-limit" | "other";
@@ -88,37 +87,30 @@ interface ParsedError {
 	rateLimitReset: number | undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
 /**
  * Extract the Anthropic-style error fields from a response body.
  * Reads `body.error.{message,code,type,rateLimit}` with top-level fallbacks.
  * A non-object body is treated as an empty object.
  */
-function parseErrorBody(body: unknown): ParsedError {
-	const b = asRecord(body);
-	if (b === undefined) {
-		return {
-			message: "",
-			code: "",
-			type: "",
-			rateLimitWindow: undefined,
-			rateLimitReset: undefined,
-		};
-	}
-	const err = asRecord(b.error);
-	const message = String(err?.message ?? b.message ?? "");
-	const code = String(err?.code ?? b.code ?? "");
-	const type = String(err?.type ?? b.type ?? "");
-	const rateLimit = asRecord(err?.rateLimit);
+function parseErrorBody(body: JsonObject): ParsedError {
+	const err = isJsonObject(body.error) ? body.error : null;
+	const message =
+		(isJsonString(err?.message) ? err.message : undefined) ??
+		(isJsonString(body.message) ? body.message : undefined) ??
+		"";
+	const code =
+		(isJsonString(err?.code) ? err.code : undefined) ??
+		(isJsonString(body.code) ? body.code : undefined) ??
+		"";
+	const type =
+		(isJsonString(err?.type) ? err.type : undefined) ??
+		(isJsonString(body.type) ? body.type : undefined) ??
+		"";
+	const rateLimit = isJsonObject(err?.rateLimit) ? err.rateLimit : null;
 	const resetRaw = rateLimit?.reset;
-	const rateLimitReset = typeof resetRaw === "number" ? resetRaw : undefined;
+	const rateLimitReset = isFiniteJsonNumber(resetRaw) ? resetRaw : undefined;
 	const windowRaw = rateLimit?.window;
-	const rateLimitWindow = typeof windowRaw === "string" ? windowRaw : undefined;
+	const rateLimitWindow = isJsonString(windowRaw) ? windowRaw : undefined;
 	return {
 		message,
 		code,
@@ -136,7 +128,7 @@ function parseErrorBody(body: unknown): ParsedError {
  * classifies itself. `status === undefined` covers a mid-stream `error` line
  * with no `statusCode`; classification then relies on message and code alone.
  */
-export function classifyFailure(status: number | undefined, body: unknown): Verdict {
+export function classifyFailure(status: number | undefined, body: JsonObject): Verdict {
 	const { message, code, type, rateLimitWindow } = parseErrorBody(body);
 	const lowerMsg = message.toLowerCase();
 
@@ -177,7 +169,7 @@ export function classifyFailure(status: number | undefined, body: unknown): Verd
  * Primary: `error.rateLimit.reset` (epoch seconds) × 1000.
  * Fallback: an ISO timestamp captured by `/resets at (…Z)/i` on the message.
  */
-export function resetAtMs(body: unknown): number | undefined {
+export function resetAtMs(body: JsonObject): number | undefined {
 	const { rateLimitReset, message } = parseErrorBody(body);
 	if (rateLimitReset !== undefined) {
 		return rateLimitReset * 1000;

@@ -1,3 +1,5 @@
+import { lookup } from "./guards";
+
 export interface ModelCost {
 	input: number;
 	output: number;
@@ -21,7 +23,7 @@ export const ZERO_COST: ModelCost = {
 };
 
 /** USD per million tokens, as billed: published promotions are already applied. */
-export const MODEL_COSTS: Readonly<Record<string, ModelCost>> = {
+export const MODEL_COSTS = {
 	"MiniMaxAI/MiniMax-M2.5": { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0 },
 	"MiniMaxAI/MiniMax-M2.7": { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 },
 	"MiniMaxAI/MiniMax-M3": { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 },
@@ -78,9 +80,9 @@ export const MODEL_COSTS: Readonly<Record<string, ModelCost>> = {
 	"zai-org/GLM-5.2": { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
 	"zai-org/GLM-5.2-Fast": { input: 3, output: 10.25, cacheRead: 0.5, cacheWrite: 0 },
 	"zai-org/GLM-5.3": { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
-};
+} satisfies Readonly<Record<string, ModelCost>>;
 
 /** Rates for a model id, or zero for an id the table does not carry. */
 export function costForModel(id: string): ModelCost {
-	return MODEL_COSTS[id] ?? ZERO_COST;
+	return lookup(MODEL_COSTS, id) ?? ZERO_COST;
 }

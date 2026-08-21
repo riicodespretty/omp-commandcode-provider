@@ -1,10 +1,12 @@
+import { lookup } from "./guards";
+
 export interface ModelCapabilities {
 	reasoning: boolean;
 	vision: boolean;
 }
 
 /** Reasoning and image support, which the discovery endpoint does not publish. */
-export const MODEL_CAPABILITIES: Readonly<Record<string, ModelCapabilities>> = {
+export const MODEL_CAPABILITIES = {
 	"MiniMaxAI/MiniMax-M2.5": { reasoning: false, vision: false },
 	"MiniMaxAI/MiniMax-M2.7": { reasoning: false, vision: false },
 	"MiniMaxAI/MiniMax-M3": { reasoning: true, vision: true },
@@ -61,7 +63,7 @@ export const MODEL_CAPABILITIES: Readonly<Record<string, ModelCapabilities>> = {
 	"zai-org/GLM-5.2": { reasoning: true, vision: false },
 	"zai-org/GLM-5.2-Fast": { reasoning: false, vision: false },
 	"zai-org/GLM-5.3": { reasoning: true, vision: false },
-};
+} satisfies Readonly<Record<string, ModelCapabilities>>;
 
 const TEXT_ONLY: ("text" | "image")[] = ["text"];
 const TEXT_IMAGE: ("text" | "image")[] = ["text", "image"];
@@ -70,11 +72,13 @@ const TEXT_IMAGE: ("text" | "image")[] = ["text", "image"];
  * Capabilities for a discovered model id. An id the snapshot does not carry
  * claims nothing: text-only and non-reasoning.
  */
-export function capabilitiesForModel(id: string): {
+export interface ModelDiscoveryCapabilities {
 	reasoning: boolean;
 	input: ("text" | "image")[];
-} {
-	const capabilities = MODEL_CAPABILITIES[id];
+}
+
+export function capabilitiesForModel(id: string): ModelDiscoveryCapabilities {
+	const capabilities = lookup(MODEL_CAPABILITIES, id);
 	if (!capabilities) return { reasoning: false, input: TEXT_ONLY };
 	return {
 		reasoning: capabilities.reasoning,

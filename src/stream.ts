@@ -12,8 +12,10 @@ import type {
 	ToolCall,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveApiKeyOnce } from "@oh-my-pi/pi-ai";
-import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+
+import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveApiKeyOnce } from "./auth-retry";
+import { createAssistantMessageEventStream } from "./event-stream";
+import type { AssistantMessageEventStream as LocalAssistantMessageEventStream } from "./event-stream";
 
 import {
 	API_ID,
@@ -24,6 +26,15 @@ import {
 	resetAtMs,
 	resolveBaseUrl,
 } from "./api";
+import {
+	isJsonNumber,
+	isJsonObject,
+	isJsonString,
+	isObjectLike,
+	type JsonObject,
+	type JsonValue,
+} from "./guards";
+import { costForModel } from "./pricing";
 
 const MAX_KEY_ATTEMPTS = 4;
 const MAX_RATE_LIMIT_ATTEMPTS = 3;
@@ -54,28 +65,23 @@ type WireParams = {
 	reasoning_effort?: "low" | "medium" | "high";
 };
 
-/** Canonical boundary guard for gateway JSON; every field read re-checks with typeof. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function readErrorMessage(body: unknown): string | undefined {
-	if (!isRecord(body)) return undefined;
+function readErrorMessage(body: JsonValue | undefined): string | undefined {
+	if (!isJsonObject(body)) return undefined;
 	const nested = body.error;
-	if (isRecord(nested) && typeof nested.message === "string") return nested.message;
-	if (typeof body.message === "string") return body.message;
+	if (isJsonObject(nested) && isJsonString(nested.message)) return nested.message;
+	if (isJsonString(body.message)) return body.message;
 	return undefined;
 }
 
-function readErrorStatusCode(body: unknown): number | undefined {
-	if (!isRecord(body)) return undefined;
+function readErrorStatusCode(body: JsonValue | undefined): number | undefined {
+	if (!isJsonObject(body)) return undefined;
 	const nested = body.error;
-	if (isRecord(nested) && typeof nested.statusCode === "number") return nested.statusCode;
+	if (isJsonObject(nested) && isJsonNumber(nested.statusCode)) return nested.statusCode;
 	return undefined;
 }
 
 function textOf(content: string | (TextContent | { type: string })[]): string {
-	if (typeof content === "string") return content;
+	if (isJsonString(content)) return content;
 	return content
 		.filter((part): part is TextContent => part.type === "text")
 		.map((part) => part.text)
@@ -162,14 +168,14 @@ function buildBody(
 	}
 	// Wrapper shape verified live against POST /alpha/generate: the gateway rejects
 	// null wrapper fields — memory/taste/skills are strings and config is an object.
+	const apiEnv = process.env.COMMANDCODE_API_ENV;
+	const environment: string =
+		apiEnv === undefined ? "production" : apiEnv === "prod" ? "production" : apiEnv;
 	return {
 		config: {
 			workingDir: process.cwd(),
 			date: new Date().toISOString().slice(0, 10),
-			environment:
-				(process.env.COMMANDCODE_API_ENV ?? "prod") === "prod"
-					? "production"
-					: (process.env.COMMANDCODE_API_ENV as string),
+			environment,
 			structure: [],
 			isGitRepo: false,
 			currentBranch: "",
@@ -225,7 +231,7 @@ function keyResolver(
 	sessionId: string | undefined,
 ): ApiKeyResolver | undefined {
 	if (isApiKeyResolver(apiKey)) return apiKey;
-	if (typeof apiKey === "string" && apiKey !== "") return () => apiKey;
+	if (isJsonString(apiKey) && apiKey !== "") return () => apiKey;
 	return auth?.resolver(PROVIDER_ID, { sessionId, modelId });
 }
 
@@ -248,30 +254,40 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<bo
 	return promise;
 }
 
-function isAbortError(err: unknown): boolean {
+function isAbortError<T>(err: T): boolean {
 	return err instanceof Error && err.name === "AbortError";
 }
 
-function readWireUsage(finishEvent: Record<string, unknown>): Usage | undefined {
+function readWireUsage(finishEvent: JsonObject, modelId: string): Usage | undefined {
 	const totalUsage = finishEvent.totalUsage;
-	if (!isRecord(totalUsage)) return undefined;
-	const input = typeof totalUsage.inputTokens === "number" ? totalUsage.inputTokens : 0;
-	const output = typeof totalUsage.outputTokens === "number" ? totalUsage.outputTokens : 0;
+	if (!isJsonObject(totalUsage)) return undefined;
+	const input = isJsonNumber(totalUsage.inputTokens) ? totalUsage.inputTokens : 0;
+	const output = isJsonNumber(totalUsage.outputTokens) ? totalUsage.outputTokens : 0;
 	let cacheRead = 0;
 	let cacheWrite = 0;
 	const details = totalUsage.inputTokenDetails;
-	if (isRecord(details)) {
-		if (typeof details.cacheReadTokens === "number") cacheRead = details.cacheReadTokens;
-		if (typeof details.cacheWriteTokens === "number") cacheWrite = details.cacheWriteTokens;
+	if (isJsonObject(details)) {
+		if (isJsonNumber(details.cacheReadTokens)) cacheRead = details.cacheReadTokens;
+		if (isJsonNumber(details.cacheWriteTokens)) cacheWrite = details.cacheWriteTokens;
 	}
-	// Command Code bills its own credits, not per-token USD — cost is honestly zero.
+	const rates = costForModel(modelId);
 	return {
 		input,
 		output,
 		cacheRead,
 		cacheWrite,
 		totalTokens: input + output + cacheRead + cacheWrite,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		cost: {
+			input: (input * rates.input) / 1_000_000,
+			output: (output * rates.output) / 1_000_000,
+			cacheRead: (cacheRead * rates.cacheRead) / 1_000_000,
+			cacheWrite: (cacheWrite * rates.cacheWrite) / 1_000_000,
+			total:
+				(input * rates.input) / 1_000_000 +
+				(output * rates.output) / 1_000_000 +
+				(cacheRead * rates.cacheRead) / 1_000_000 +
+				(cacheWrite * rates.cacheWrite) / 1_000_000,
+		},
 	};
 }
 
@@ -279,7 +295,7 @@ type StreamOutcome =
 	| "done"
 	| "aborted"
 	| "content-failed"
-	| { status: number | undefined; body: unknown };
+	| { status: number | undefined; body: JsonObject };
 
 export function createCommandCodeStream(deps: {
 	getAuthStorage(): AuthStorage | undefined;
@@ -293,7 +309,7 @@ export function createCommandCodeStream(deps: {
 ) => AssistantMessageEventStream {
 	return (model, context, options) => {
 		const stream = createAssistantMessageEventStream();
-		void run(model, context, options, stream).catch((err: unknown) => {
+		void run(model, context, options, stream).catch((err) => {
 			// Last-resort guard: run() converts every known failure into a
 			// terminal event, so reaching here means an unexpected throw.
 			if (stream.done) return;
@@ -303,14 +319,17 @@ export function createCommandCodeStream(deps: {
 			partial.errorMessage = err instanceof Error ? err.message : String(err);
 			stream.push({ type: "error", reason: aborted ? "aborted" : "error", error: partial });
 		});
-		return stream;
+		// SAFETY: the local stream implements the host event stream's public
+		// surface member-for-member; the host consumes push/end/fail/result(),
+		// iteration, and done at runtime, never the nominal #private marker.
+		return stream as AssistantMessageEventStream;
 	};
 
 	async function run(
 		model: Model<Api>,
 		context: Context,
 		options: SimpleStreamOptions | undefined,
-		stream: AssistantMessageEventStream,
+		stream: LocalAssistantMessageEventStream,
 	): Promise<void> {
 		const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
 		const signal = options?.signal;
@@ -347,7 +366,7 @@ export function createCommandCodeStream(deps: {
 
 		/** Walk the remaining native a/b/c steps until the resolver yields a different bearer. */
 		const nextAuthKey = async (
-			error: unknown,
+			error: JsonValue,
 			previousKey: string,
 		): Promise<string | undefined> => {
 			while (authStep < AUTH_RETRY_STEPS.length) {
@@ -386,17 +405,19 @@ export function createCommandCodeStream(deps: {
 			}
 
 			let status: number | undefined;
-			let body: unknown;
+			let body: JsonObject;
 			if (!response.ok) {
 				status = response.status;
 				const text = await response.text().catch(() => "");
+				let parsed: JsonValue;
 				try {
-					body = JSON.parse(text);
+					parsed = JSON.parse(text);
 				} catch {
-					body = {};
+					parsed = null;
 				}
+				body = isJsonObject(parsed) ? parsed : {};
 			} else {
-				const outcome = await consumeStream(response, partial, stream);
+				const outcome = await consumeStream(response, partial, stream, model.id);
 				if (outcome === "done") return;
 				if (outcome === "aborted") {
 					failAborted();
@@ -497,7 +518,8 @@ export function createCommandCodeStream(deps: {
 	async function consumeStream(
 		response: Response,
 		partial: AssistantMessage,
-		stream: AssistantMessageEventStream,
+		stream: LocalAssistantMessageEventStream,
+		modelId: string,
 	): Promise<StreamOutcome> {
 		if (!response.body) return { status: response.status, body: {} };
 		const reader = response.body.getReader();
@@ -539,7 +561,7 @@ export function createCommandCodeStream(deps: {
 		};
 
 		for (;;) {
-			const result = await reader.read().catch((err: unknown) => {
+			const result = await reader.read().catch((err) => {
 				if (isAbortError(err)) return null;
 				throw err;
 			});
@@ -560,11 +582,16 @@ export function createCommandCodeStream(deps: {
 					// Guards against a trailing partial chunk; not fatal.
 					continue;
 				}
-				if (!isRecord(event) || typeof event.type !== "string") continue;
+				if (!isObjectLike(event) || !isJsonString(event.type)) continue;
+
+				// SAFETY: the guard above narrowed `event` to a non-null object
+				// whose `type` field is a string; JSON.parse can only produce
+				// JSON values, so the remaining fields are JsonObject members.
+				const ev: JsonObject = event;
 
 				switch (event.type) {
 					case "text-delta": {
-						if (typeof event.text !== "string") break;
+						if (!isJsonString(ev.text)) break;
 						if (openBlock !== "text") {
 							closeOpenBlock();
 							partial.content.push({ type: "text", text: "" });
@@ -572,8 +599,8 @@ export function createCommandCodeStream(deps: {
 							openBlock = "text";
 						}
 						const part = partial.content[contentIndex];
-						if (part?.type === "text") part.text += event.text;
-						stream.push({ type: "text_delta", contentIndex, delta: event.text, partial });
+						if (part?.type === "text") part.text += ev.text;
+						stream.push({ type: "text_delta", contentIndex, delta: ev.text, partial });
 						break;
 					}
 					case "reasoning-start": {
@@ -586,7 +613,7 @@ export function createCommandCodeStream(deps: {
 						break;
 					}
 					case "reasoning-delta": {
-						if (typeof event.text !== "string") break;
+						if (!isJsonString(ev.text)) break;
 						if (openBlock !== "thinking") {
 							closeOpenBlock();
 							partial.content.push({ type: "thinking", thinking: "" });
@@ -594,8 +621,8 @@ export function createCommandCodeStream(deps: {
 							openBlock = "thinking";
 						}
 						const part = partial.content[contentIndex];
-						if (part?.type === "thinking") part.thinking += event.text;
-						stream.push({ type: "thinking_delta", contentIndex, delta: event.text, partial });
+						if (part?.type === "thinking") part.thinking += ev.text;
+						stream.push({ type: "thinking_delta", contentIndex, delta: ev.text, partial });
 						break;
 					}
 					case "reasoning-end": {
@@ -604,19 +631,19 @@ export function createCommandCodeStream(deps: {
 					}
 					case "tool-call": {
 						if (
-							typeof event.toolCallId !== "string" ||
-							typeof event.toolName !== "string" ||
-							event.input === undefined
+							!isJsonString(ev.toolCallId) ||
+							!isJsonString(ev.toolName) ||
+							ev.input === undefined
 						) {
 							break;
 						}
 						closeOpenBlock();
 						sawToolCall = true;
-						const input: Record<string, unknown> = isRecord(event.input) ? event.input : {};
+						const input: Record<string, unknown> = isJsonObject(ev.input) ? ev.input : {};
 						const toolCall: ToolCall = {
 							type: "toolCall",
-							id: event.toolCallId,
-							name: event.toolName,
+							id: ev.toolCallId,
+							name: ev.toolName,
 							arguments: input,
 						};
 						stream.push({ type: "toolcall_start", contentIndex, partial });
@@ -637,9 +664,9 @@ export function createCommandCodeStream(deps: {
 					}
 					case "finish": {
 						closeOpenBlock();
-						const usage = readWireUsage(event);
+						const usage = readWireUsage(ev, modelId);
 						if (usage) partial.usage = usage;
-						const finishReason = typeof event.finishReason === "string" ? event.finishReason : "";
+						const finishReason = isJsonString(ev.finishReason) ? ev.finishReason : "";
 						if (sawToolCall || finishReason === "tool_calls") {
 							partial.stopReason = "toolUse";
 						} else if (finishReason === "max_tokens" || finishReason === "length") {
@@ -653,13 +680,13 @@ export function createCommandCodeStream(deps: {
 					case "error": {
 						// Mid-stream failure: error.statusCode is the status, the whole
 						// line is the classification body.
-						const status = readErrorStatusCode(event);
+						const status = readErrorStatusCode(ev);
 						if (openBlock !== undefined || contentIndex > 0) {
 							closeOpenBlock();
-							fail(readErrorMessage(event) ?? "Command Code stream failed", status);
+							fail(readErrorMessage(ev) ?? "Command Code stream failed", status);
 							return "content-failed";
 						}
-						return { status, body: event };
+						return { status, body: ev };
 					}
 					default:
 						break;

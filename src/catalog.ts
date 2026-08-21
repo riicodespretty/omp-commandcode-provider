@@ -8,6 +8,7 @@
 import type { ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 
 import { DEFAULT_MAX_TOKENS, resolveBaseUrl } from "./api";
+import { isFiniteJsonNumber, isJsonObject, isJsonString, type JsonValue } from "./guards";
 import { capabilitiesForModel } from "./models";
 import { costForModel } from "./pricing";
 
@@ -35,12 +36,12 @@ export function resolveModelsTimeoutMs(env: Env = process.env): number {
 	return DEFAULT_MODELS_TIMEOUT_MS;
 }
 
-export function modelsFromApiResponse(value: unknown): ProviderModelConfig[] {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+export function modelsFromApiResponse(value: JsonValue | undefined): ProviderModelConfig[] {
+	if (!isJsonObject(value)) {
 		throw new Error("Expected models response to be an object");
 	}
 
-	const record = value as Record<string, unknown>;
+	const record = value;
 	if (record.object !== "list") {
 		throw new Error("Expected models response object to be 'list'");
 	}
@@ -56,24 +57,20 @@ export function modelsFromApiResponse(value: unknown): ProviderModelConfig[] {
 	const models: ProviderModelConfig[] = [];
 	for (let i = 0; i < record.data.length; i++) {
 		const item = record.data[i];
-		if (typeof item !== "object" || item === null || Array.isArray(item)) {
+		if (!isJsonObject(item)) {
 			throw new Error(`Expected model entry at index ${i} to be an object`);
 		}
 
-		const entry = item as Record<string, unknown>;
-		if (typeof entry.id !== "string" || entry.id.trim().length === 0) {
+		const entry = item;
+		if (!isJsonString(entry.id) || entry.id.trim().length === 0) {
 			throw new Error(`Expected model entry at index ${i} to have a non-empty string 'id'`);
 		}
 
-		if (typeof entry.name !== "string" || entry.name.trim().length === 0) {
+		if (!isJsonString(entry.name) || entry.name.trim().length === 0) {
 			throw new Error(`Expected model entry at index ${i} to have a non-empty string 'name'`);
 		}
 
-		if (
-			typeof entry.context_length !== "number" ||
-			!Number.isFinite(entry.context_length) ||
-			entry.context_length <= 0
-		) {
+		if (!isFiniteJsonNumber(entry.context_length) || entry.context_length <= 0) {
 			throw new Error(
 				`Expected model entry at index ${i} to have a positive finite 'context_length'`,
 			);
