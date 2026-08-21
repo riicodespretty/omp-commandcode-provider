@@ -45,6 +45,7 @@ import {
 	parseSummary,
 	parseWhoami,
 } from "./src/commandcode-usage";
+import { loginWithCommandCode } from "./src/login";
 
 /* ------------------------------------------------------------------ *
  * Test helpers
@@ -2044,5 +2045,84 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 		} finally {
 			globalThis.fetch = realFetch;
 		}
+	});
+});
+
+describe("provider parity — catalog, headers, and login", () => {
+	test("fetchCommandCodeModels sends authorization and standard headers when apiKey is present", async () => {
+		let capturedHeaders: Record<string, string> | undefined;
+		const fetchImpl = asFetchImpl(async (_input: URL | RequestInfo, init?: RequestInit) => {
+			// SAFETY: init.headers is a plain header record in tests.
+			capturedHeaders = init?.headers as Record<string, string> | undefined;
+			return new Response(
+				JSON.stringify({
+					object: "list",
+					data: [
+						{
+							id: "claude-sonnet-5",
+							name: "Claude Sonnet 5",
+							context_length: 1_000_000,
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+
+		const models = await fetchCommandCodeModels({ fetchImpl, apiKey: "user_catalog_key" });
+		expect(models).toHaveLength(1);
+		expect(capturedHeaders?.authorization ?? capturedHeaders?.Authorization).toBe(
+			"Bearer user_catalog_key",
+		);
+		expect(capturedHeaders?.["user-agent"] ?? capturedHeaders?.["User-Agent"]).toBe("cli");
+		expect(capturedHeaders?.accept ?? capturedHeaders?.Accept).toBe("application/json");
+	});
+
+	test("fetchCommandCodeModels omits Authorization header when apiKey is undefined", async () => {
+		let capturedHeaders: Record<string, string> | undefined;
+		const fetchImpl = asFetchImpl(async (_input: URL | RequestInfo, init?: RequestInit) => {
+			// SAFETY: init.headers is a plain header record in tests.
+			capturedHeaders = init?.headers as Record<string, string> | undefined;
+			return new Response(
+				JSON.stringify({
+					object: "list",
+					data: [
+						{
+							id: "claude-sonnet-5",
+							name: "Claude Sonnet 5",
+							context_length: 1_000_000,
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+
+		await fetchCommandCodeModels({ fetchImpl });
+		expect(capturedHeaders?.authorization ?? capturedHeaders?.Authorization).toBeUndefined();
+		expect(capturedHeaders?.["user-agent"] ?? capturedHeaders?.["User-Agent"]).toBe("cli");
+		expect(capturedHeaders?.accept ?? capturedHeaders?.Accept).toBe("application/json");
+	});
+
+	test("loginWithCommandCode provides launchUrl when callback server is active", async () => {
+		let capturedUrl: string | undefined;
+		let capturedLaunchUrl: string | undefined;
+		const abortController = new AbortController();
+
+		const promptPromise = loginWithCommandCode({
+			onAuth(info) {
+				capturedUrl = info.url;
+				capturedLaunchUrl = info.launchUrl;
+				abortController.abort();
+			},
+			onPrompt: () => new Promise<string>(() => {}),
+			signal: abortController.signal,
+		});
+
+		await expect(promptPromise).rejects.toThrow(/cancelled|aborted/i);
+		expect(capturedUrl).toContain("https://commandcode.ai/studio/auth/cli");
+		expect(
+			capturedLaunchUrl === undefined || /^http:\/\/localhost:\d+\/$/.test(capturedLaunchUrl),
+		).toBe(true);
 	});
 });

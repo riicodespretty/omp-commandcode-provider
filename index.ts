@@ -66,10 +66,11 @@ export default function commandCodeProvider(pi: ExtensionAPI): void {
 	pi.registerProvider(PROVIDER_ID, {
 		baseUrl: resolveBaseUrl(),
 		api: API_ID,
-		fetchDynamicModels: () =>
+		fetchDynamicModels: (apiKey) =>
 			fetchCommandCodeModels({
 				url: resolveModelsUrl(),
 				timeoutMs: resolveModelsTimeoutMs(),
+				apiKey,
 			}),
 		streamSimple: createCommandCodeStream({
 			getAuthStorage: () => authStorage,

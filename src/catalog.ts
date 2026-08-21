@@ -93,6 +93,7 @@ export function modelsFromApiResponse(value: JsonValue | undefined): ProviderMod
 
 export interface FetchCommandCodeModelsOptions {
 	url?: string;
+	apiKey?: string;
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
 	signal?: AbortSignal;
@@ -128,9 +129,13 @@ export async function fetchCommandCodeModels(
 	}
 
 	try {
+		const baseHeaders = { accept: "application/json", "User-Agent": "cli" };
+		const headers = options.apiKey
+			? { ...baseHeaders, Authorization: `Bearer ${options.apiKey}` }
+			: baseHeaders;
 		const response = await fetchImpl(url, {
 			method: "GET",
-			headers: { accept: "application/json" },
+			headers,
 			signal: controller.signal,
 		});
 

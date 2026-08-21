@@ -12,7 +12,7 @@ import { isJsonString, isObjectLike, type JsonObject } from "./guards";
  * API key; omp persists it. Structurally compatible with `OAuthLoginCallbacks`.
  */
 export async function loginWithCommandCode(cb: {
-	onAuth(info: { url: string; instructions?: string }): void;
+	onAuth(info: { url: string; launchUrl?: string; instructions?: string }): void;
 	onPrompt(p: { message: string; placeholder?: string; allowEmpty?: boolean }): Promise<string>;
 	signal?: AbortSignal;
 }): Promise<string> {
@@ -43,6 +43,7 @@ export async function loginWithCommandCode(cb: {
 
 	cb.onAuth({
 		url: callbackUrl,
+		launchUrl: port ? `http://localhost:${port}/` : undefined,
 		instructions: "Approve the CLI in your browser, or paste a Provider API key here.",
 	});
 
@@ -54,7 +55,7 @@ export async function loginWithCommandCode(cb: {
 
 	if (server !== undefined) {
 		const onMatch = (key: string): void => resolveKey?.(key);
-		server.on("request", (req, res) => handleCallback(req, res, state, onMatch));
+		server.on("request", (req, res) => handleCallback(req, res, state, onMatch, callbackUrl));
 	}
 
 	// Paste path is always available, even when no port could be bound.
@@ -127,7 +128,24 @@ function handleCallback(
 	res: ServerResponse,
 	state: string,
 	onMatch: (key: string) => void,
+	authUrl: string,
 ): void {
+	if (req.method === "GET" && (req.url === "/" || req.url === "/launch")) {
+		res.writeHead(302, { Location: authUrl });
+		res.end();
+		return;
+	}
+
+	if (req.method === "OPTIONS" && req.url === "/callback") {
+		res.writeHead(204, {
+			"Access-Control-Allow-Origin": "*",
+			"Access-Control-Allow-Methods": "POST, OPTIONS",
+			"Access-Control-Allow-Headers": "Content-Type",
+		});
+		res.end();
+		return;
+	}
+
 	if (req.method !== "POST" || req.url !== "/callback") {
 		res.writeHead(404, { "Content-Type": "text/plain" });
 		res.end("Not found");
@@ -160,7 +178,10 @@ function handleCallback(
 		}
 
 		const key = isJsonString(payload.apiKey) ? payload.apiKey : "";
-		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+		res.writeHead(200, {
+			"Content-Type": "text/html; charset=utf-8",
+			"Access-Control-Allow-Origin": "*",
+		});
 		res.end(
 			"<!doctype html><html><body><h2>Command Code login successful</h2>" +
 				"<p>You may close this tab and return to the terminal.</p></body></html>",
