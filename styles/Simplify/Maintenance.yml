@@ -1,0 +1,21 @@
+---
+extends: substitution
+message: "ASD-STE100 1.1: prefer '%s' over '%s'."
+link: https://asd-ste100.org/
+level: suggestion
+ignorecase: true
+swap:
+  'carry': 'transmit|transport'
+  'allow': 'let'
+  'place': 'put'
+  'terminate': 'stop'
+  'separate': 'disconnect|divide'
+  'inside': 'in|into'
+  'vary': 'change'
+  'take': 'remove|read|get'
+  'another': 'one|different|add'
+  'soon': 'time'
+  'up to': 'until|thru|maximum'
+  'fresh': 'clean|new'
+  'once': 'when'
+  'present': 'give|show'

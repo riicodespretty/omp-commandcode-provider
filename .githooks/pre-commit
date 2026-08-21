@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 
-# Prose gate: Vale at error level on staged files .vale.ini covers.
+# Prose gate: Vale at warning level on staged files .vale.ini covers.
 # Vendored Vale styles are upstream rule definitions, not project prose.
 staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.md' '*.ts' '*.tsx' '*.js' '*.py' '*.go' '*.rs' ':(exclude)styles/**')
 if [ -n "$staged" ]; then
   # shellcheck disable=SC2086
-  bunx vale --minAlertLevel=error $staged
+  bunx vale --minAlertLevel=warning $staged
 fi
 
 # Toolchain gate: format, lint, and type check (CI parity).
