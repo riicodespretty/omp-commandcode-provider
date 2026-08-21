@@ -148,9 +148,9 @@ The plugin builds the report from four gateway endpoints:
 
 The report renders:
 
-- **Command Code Credits** — the combined balance (monthly plus purchased plus free), the cost spent since the billing period started, and a used fraction. The status is `ok` less than 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
-- **Plan** — the monthly credit limit for the active plan, when known.
-- **Usage since period start** — the accumulated USD cost, with the top models by cost when the summary provides them.
+- **Command Code Credits**—the combined balance (monthly plus purchased plus free), the cost spent since the billing period started, and a used fraction. The status is `ok` less than 80% used, `warning` from 80% up, and `exhausted` at 100%. The reset time is the billing period end.
+- **Plan**—the monthly credit limit for the active plan, when known.
+- **Usage since period start**—the accumulated USD cost, with the top models by cost when the summary provides them.
 
 Each request uses the resolved base URL and the same headers as model traffic, forwards the host's cancel signal, and runs through the host credential store. A failed request degrades to no report rather than an error: `/usage` then falls back to the host's session token tallies, which the plugin's per-turn cost tracking (`readWireUsage` in `src/stream.ts`) feeds from the gateway's `finish` event.
 
@@ -158,7 +158,7 @@ Each request uses the resolved base URL and the same headers as model traffic, f
 
 The report also drives the host's status-line `usage` segment when Command Code is the active provider. It carries `7d` and `5h` windowed limits with the same used fraction as the credits limit, which the host renders as `7d <pct>%` and `5h <pct>%` with the billing-period reset.
 
-The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style) — so the rate reflects the real hit ratio rather than capping at 50%.
+The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style)—so the rate reflects the real hit ratio rather than capping at 50%.
 
 The `token_rate` segment shows the last assistant turn's throughput (`output / duration`), as the host computes it. This is not a moving average across turns. A session-level average requires a host-side change.
 
