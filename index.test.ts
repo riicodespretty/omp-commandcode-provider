@@ -728,8 +728,8 @@ describe("pricing", () => {
 		expect(costForModel("unknown/nonexistent-model")).toEqual(ZERO_COST);
 	});
 
-	test("MODEL_COSTS contains exactly 56 rows", () => {
-		expect(Object.keys(MODEL_COSTS)).toHaveLength(56);
+	test("MODEL_COSTS contains exactly 57 rows", () => {
+		expect(Object.keys(MODEL_COSTS)).toHaveLength(57);
 	});
 
 	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
@@ -761,8 +761,8 @@ describe("pricing", () => {
 });
 
 describe("capabilities audit", () => {
-	test("MODEL_CAPABILITIES contains exactly 56 rows", () => {
-		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(56);
+	test("MODEL_CAPABILITIES contains exactly 57 rows", () => {
+		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(57);
 	});
 
 	test("MODEL_COSTS and MODEL_CAPABILITIES carry the identical id set", () => {
@@ -806,6 +806,13 @@ describe("capabilities audit", () => {
 
 		expect(capabilitiesForModel("nvidia/nemotron-3-ultra-550b-a55b").reasoning).toBe(true);
 		expect(MODEL_CAPABILITIES["nvidia/nemotron-3-ultra-550b-a55b"]?.reasoning).toBe(true);
+	});
+	test("stealth/ox-alpha reports reasoning and vision", () => {
+		expect(MODEL_CAPABILITIES["stealth/ox-alpha"]).toEqual({ reasoning: true, vision: true });
+		expect(capabilitiesForModel("stealth/ox-alpha")).toEqual({
+			reasoning: true,
+			input: ["text", "image"],
+		});
 	});
 
 	test("claude-haiku-4-5-20251001 remains non-reasoning with vision", () => {

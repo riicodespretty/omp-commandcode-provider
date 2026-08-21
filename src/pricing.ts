@@ -73,6 +73,7 @@ export const MODEL_COSTS = {
 	"thinkingmachines/inkling-small": { input: 0.5, output: 1.2, cacheRead: 0.1, cacheWrite: 0 },
 	"xai/grok-4.5": { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
 	"xai/grok-4.6": { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+	"stealth/ox-alpha": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	"xiaomi/mimo-v2.5": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
 	"xiaomi/mimo-v2.5-pro": { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 },
 	"zai-org/GLM-5": { input: 1, output: 3.2, cacheRead: 0.2, cacheWrite: 0 },

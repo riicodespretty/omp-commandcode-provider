@@ -63,6 +63,7 @@ export const MODEL_CAPABILITIES = {
 	"zai-org/GLM-5.2": { reasoning: true, vision: false },
 	"zai-org/GLM-5.2-Fast": { reasoning: false, vision: false },
 	"zai-org/GLM-5.3": { reasoning: true, vision: false },
+	"stealth/ox-alpha": { reasoning: true, vision: true },
 } satisfies Readonly<Record<string, ModelCapabilities>>;
 
 const TEXT_ONLY: ("text" | "image")[] = ["text"];
