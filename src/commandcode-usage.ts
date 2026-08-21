@@ -11,9 +11,18 @@ import {
 } from "./guards";
 
 export interface CommandCodeWhoami {
-	orgId: string;
-	orgLogin?: string;
+	/** The account's userId — the gateway keys usage queries on this, not org. */
+	userId: string;
 	userName?: string;
+	orgId?: string;
+	orgLogin?: string;
+}
+
+export interface CommandCodeWindowLimit {
+	used: number;
+	cap: number | undefined;
+	exceeded: boolean;
+	resetAt?: number;
 }
 
 export interface CommandCodeCredits {
@@ -21,6 +30,8 @@ export interface CommandCodeCredits {
 	purchasedCredits: number;
 	freeCredits: number;
 	planId?: string;
+	fiveHour?: CommandCodeWindowLimit;
+	weekly?: CommandCodeWindowLimit;
 }
 
 export interface CommandCodeSubscription {
@@ -32,6 +43,8 @@ export interface CommandCodeSubscription {
 
 export interface CommandCodeSummary {
 	totalCost: number;
+	totalTokens?: number;
+	totalCount?: number;
 	topModels?: string[];
 }
 
@@ -48,16 +61,28 @@ export function parseWhoami(raw: JsonValue | undefined): CommandCodeWhoami | nul
 	if (!isJsonObject(raw)) return null;
 	const root = raw;
 	const data = isJsonObject(root.data) ? root.data : root;
-	const org = isJsonObject(data.org) ? data.org : undefined;
-	const orgId = org && isJsonString(org.id) && org.id.length > 0 ? org.id : undefined;
-	if (!orgId) return null;
-
 	const user = isJsonObject(data.user) ? data.user : undefined;
-	const orgLogin = org && isJsonString(org.login) && org.login.length > 0 ? org.login : undefined;
+	const userId = user && isJsonString(user.id) && user.id.length > 0 ? user.id : undefined;
+	if (!userId) return null;
+
 	const userName =
 		user && isJsonString(user.userName) && user.userName.length > 0 ? user.userName : undefined;
 
-	return { orgId, orgLogin, userName };
+	const org = isJsonObject(data.org) ? data.org : undefined;
+	const orgId = org && isJsonString(org.id) && org.id.length > 0 ? org.id : undefined;
+	const orgLogin = org && isJsonString(org.login) && org.login.length > 0 ? org.login : undefined;
+
+	return { userId, userName, orgId, orgLogin };
+}
+
+function parseWindowLimit(raw: JsonValue | undefined): CommandCodeWindowLimit | undefined {
+	if (!isJsonObject(raw)) return undefined;
+	const used = isFiniteJsonNumber(raw.used) ? raw.used : undefined;
+	if (used === undefined) return undefined;
+	const cap = isFiniteJsonNumber(raw.cap) ? raw.cap : undefined;
+	const exceeded = raw.exceeded === true;
+	const resetAt = isFiniteJsonNumber(raw.resetAt) ? raw.resetAt : undefined;
+	return { used, cap, exceeded, resetAt };
 }
 
 export function parseCredits(
@@ -81,11 +106,17 @@ export function parseCredits(
 	const planId =
 		isJsonString(credits.planId) && credits.planId.length > 0 ? credits.planId : undefined;
 
+	const windowLimits = isJsonObject(data.windowLimits) ? data.windowLimits : undefined;
+	const fiveHour = parseWindowLimit(windowLimits?.fiveHour);
+	const weekly = parseWindowLimit(windowLimits?.weekly);
+
 	return {
 		monthlyCredits: monthly ?? 0,
 		purchasedCredits: purchased ?? 0,
 		freeCredits: free ?? 0,
 		planId,
+		fiveHour,
+		weekly,
 	};
 }
 
@@ -122,6 +153,8 @@ export function parseSummary(raw: JsonValue | undefined): CommandCodeSummary | n
 	const data = isJsonObject(root.data) ? root.data : root;
 
 	const totalCost = isFiniteJsonNumber(data.totalCost) ? data.totalCost : undefined;
+	const totalTokens = isFiniteJsonNumber(data.totalTokens) ? data.totalTokens : undefined;
+	const totalCount = isFiniteJsonNumber(data.totalCount) ? data.totalCount : undefined;
 	if (totalCost === undefined) return null;
 
 	let topModels: string[] | undefined;
@@ -136,7 +169,7 @@ export function parseSummary(raw: JsonValue | undefined): CommandCodeSummary | n
 		if (ranked.length > 0) topModels = ranked;
 	}
 
-	return { totalCost, topModels };
+	return { totalCost, totalTokens, totalCount, topModels };
 }
 
 function statusFor(usedFraction: number | undefined): UsageStatus {
@@ -166,32 +199,58 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 	const used = summary?.totalCost ?? 0;
 	const total = used + remaining;
 	const usedFraction = total > 0 ? used / total : undefined;
-	const scope = { provider: PROVIDER_ID, shared: true, orgId: whoami.orgId };
+	const accountId = whoami.userId;
+	const scope = { provider: PROVIDER_ID, shared: true, accountId };
 	const planId = subscription?.planId ?? credits.planId;
 	const resetsAt = parseIsoMs(subscription?.currentPeriodEnd);
 
-	const limits: UsageLimit[] = [
-		{
-			id: "commandcode:credits",
-			label: "Command Code Credits",
-			scope,
-			window: resetsAt
-				? {
-						id: "period",
-						label: "Billing period",
-						resetsAt,
-					}
-				: undefined,
-			amount: {
-				used,
-				limit: total > 0 ? total : undefined,
-				remaining,
-				usedFraction,
-				unit: "usd",
-			},
-			status: statusFor(usedFraction),
+	const limits: UsageLimit[] = [];
+
+	if (credits.fiveHour || credits.weekly) {
+		for (const [source, windowId, label] of [
+			["fiveHour", "5h", "Command Code Usage (5h)"],
+			["weekly", "7d", "Command Code Usage (7d)"],
+		] as const) {
+			const win = credits[source];
+			if (!win) continue;
+			const fraction = win.cap && win.cap > 0 ? win.used / win.cap : undefined;
+			limits.push({
+				id: `commandcode:usage:${windowId}`,
+				label,
+				scope: { ...scope, windowId },
+				window: win.resetAt ? { id: windowId, label, resetsAt: win.resetAt } : undefined,
+				amount: {
+					used: win.used,
+					limit: win.cap,
+					usedFraction: fraction,
+					unit: "usd",
+				},
+				status: statusFor(fraction),
+				notes: win.exceeded ? ["Limit reached"] : undefined,
+			});
+		}
+	}
+
+	limits.push({
+		id: "commandcode:credits",
+		label: "Command Code Credits",
+		scope,
+		window: resetsAt
+			? {
+					id: "period",
+					label: "Billing period",
+					resetsAt,
+				}
+			: undefined,
+		amount: {
+			used,
+			limit: total > 0 ? total : undefined,
+			remaining,
+			usedFraction,
+			unit: "usd",
 		},
-	];
+		status: statusFor(usedFraction),
+	});
 
 	if (planId && credits.monthlyCredits > 0) {
 		limits.push({
@@ -212,22 +271,6 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 		});
 	}
 
-	if (usedFraction !== undefined) {
-		for (const [windowId, label] of [
-			["7d", "Command Code Usage (7d)"],
-			["5h", "Command Code Usage (5h)"],
-		] as const) {
-			limits.push({
-				id: `commandcode:usage:${windowId}`,
-				label,
-				scope: { ...scope, windowId },
-				window: resetsAt ? { id: windowId, label, resetsAt } : undefined,
-				amount: { used, limit: total, remaining, usedFraction, unit: "usd" },
-				status: statusFor(usedFraction),
-			});
-		}
-	}
-
 	return {
 		provider: PROVIDER_ID,
 		fetchedAt,
@@ -235,7 +278,8 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 		notes: ["Credits are Command Code's own currency; USD figures come from its usage summary."],
 		metadata: {
 			endpoint: "commandcode",
-			account: whoami.userName ?? whoami.orgLogin ?? whoami.orgId,
+			account: whoami.userName ?? whoami.orgLogin ?? whoami.userId,
+			accountId: whoami.userId,
 			orgId: whoami.orgId,
 			planId,
 			status: subscription?.status,
@@ -285,10 +329,10 @@ export async function fetchCommandCodeUsage(
 	const whoami = parseWhoami(await getJson(fetchImpl, `${baseUrl}/alpha/whoami`, headers, signal));
 	if (!whoami) return null;
 
-	const orgQuery = `orgId=${encodeURIComponent(whoami.orgId)}`;
+	const userQuery = `userId=${encodeURIComponent(whoami.userId)}`;
 	const [creditsRaw, subscriptionRaw] = await Promise.all([
-		getJson(fetchImpl, `${baseUrl}/alpha/billing/credits?${orgQuery}`, headers, signal),
-		getJson(fetchImpl, `${baseUrl}/alpha/billing/subscriptions?${orgQuery}`, headers, signal),
+		getJson(fetchImpl, `${baseUrl}/alpha/billing/credits?${userQuery}`, headers, signal),
+		getJson(fetchImpl, `${baseUrl}/alpha/billing/subscriptions?${userQuery}`, headers, signal),
 	]);
 	const credits = parseCredits(creditsRaw);
 	if (!credits) return null;
@@ -300,7 +344,7 @@ export async function fetchCommandCodeUsage(
 		summary = parseSummary(
 			await getJson(
 				fetchImpl,
-				`${baseUrl}/alpha/usage/summary?${orgQuery}&since=${encodeURIComponent(since)}`,
+				`${baseUrl}/alpha/usage/summary?${userQuery}&since=${encodeURIComponent(since)}`,
 				headers,
 				signal,
 			),
@@ -308,6 +352,28 @@ export async function fetchCommandCodeUsage(
 	}
 
 	return buildUsageReport({ whoami, credits, subscription, summary, fetchedAt: Date.now() });
+}
+
+/**
+ * Fetch a Command Code usage report for every stored api-key credential.
+ * Used by /usage-commandcode so each logged-in account renders its own section.
+ */
+export async function fetchCommandCodeUsageForKeys(
+	keys: readonly string[],
+	options: Omit<CommandCodeUsageOptions, "apiKey">,
+): Promise<UsageReport[]> {
+	const reports: UsageReport[] = [];
+	for (const apiKey of keys) {
+		// One account fails independently of the others; a bad key must not
+		// hide the remaining accounts, so each fetch is isolated here.
+		try {
+			const report = await fetchCommandCodeUsage({ ...options, apiKey });
+			if (report) reports.push(report);
+		} catch {
+			// skip this account
+		}
+	}
+	return reports;
 }
 
 export async function fetchCommandCodeUsageReports(

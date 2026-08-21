@@ -1425,7 +1425,14 @@ describe("extension registration", () => {
 
 		const notified: string[] = [];
 		const ctx = {
-			modelRegistry: { authStorage: stubAuthStorage({ keys: ["user_test"] }) },
+			modelRegistry: {
+				authStorage: asAuthStorage({
+					getApiKey: async () => "user_test",
+					listStoredCredentials: () => [
+						{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "user_test" } },
+					],
+				}),
+			},
 			sessionManager: { getSessionId: () => "sess-usage" },
 			cwd: "/tmp/cc-test",
 			ui: { notify: (message: string) => notified.push(message) },
@@ -1442,10 +1449,18 @@ describe("extension registration", () => {
 						headers: { "Content-Type": "application/json" },
 					});
 				if (url.includes("/alpha/whoami"))
-					return json({ data: { user: { userName: "alice" }, org: { id: "org_123" } } });
+					return json({
+						data: { user: { id: "user_123", userName: "alice" }, org: { id: "org_123" } },
+					});
 				if (url.includes("/alpha/billing/credits"))
 					return json({
-						data: { credits: { monthlyCredits: 100, purchasedCredits: 20, freeCredits: 5 } },
+						data: {
+							credits: { monthlyCredits: 100, purchasedCredits: 20, freeCredits: 5 },
+							windowLimits: {
+								fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
+								weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
+							},
+						},
 					});
 				if (url.includes("/alpha/billing/subscriptions"))
 					return json({
@@ -1456,7 +1471,7 @@ describe("extension registration", () => {
 							currentPeriodEnd: "2026-09-01T00:00:00Z",
 						},
 					});
-				if (url.includes("/alpha/usage/summary")) return json({ data: { totalCost: 25 } });
+				if (url.includes("/alpha/usage/summary")) return json({ totalCost: 25 });
 				return json({}, 404);
 			},
 			{ preconnect: () => undefined },
@@ -1466,7 +1481,7 @@ describe("extension registration", () => {
 
 		expect(notified.length).toBe(1);
 		const text = notified[0] ?? "";
-		expect(text).toContain("Command Code usage");
+		expect(text).toContain("Command Code — alice");
 		expect(text).toContain("Command Code Credits");
 		expect(text).toContain("25.00 USD");
 	});
@@ -1511,26 +1526,41 @@ describe("extension registration", () => {
 
 describe("commandcode-usage — parseWhoami", () => {
 	const whoamiFixture = {
-		data: { user: { userName: "alice" }, org: { id: "org_123", login: "my-org" } },
+		data: {
+			user: { id: "user_123", userName: "alice" },
+			org: { id: "org_123", login: "my-org" },
+		},
 	};
 	test("parses whoami fixture", () => {
 		expect(parseWhoami(whoamiFixture)).toEqual({
+			userId: "user_123",
 			orgId: "org_123",
 			orgLogin: "my-org",
 			userName: "alice",
 		});
 	});
-	test("returns null when org id missing", () => {
-		expect(parseWhoami({ data: { org: { login: "x" } } })).toBeNull();
+	test("returns null when user id missing", () => {
+		expect(parseWhoami({ data: { org: { id: "org_1" } } })).toBeNull();
 		expect(parseWhoami({ data: { user: { userName: "alice" } } })).toBeNull();
 		expect(parseWhoami(null)).toBeNull();
 		expect(parseWhoami({})).toBeNull();
 	});
 	test("handles missing optional fields", () => {
-		expect(parseWhoami({ data: { org: { id: "org_1" } } })).toEqual({
-			orgId: "org_1",
+		expect(parseWhoami({ data: { user: { id: "user_1" } } })).toEqual({
+			userId: "user_1",
+			orgId: undefined,
 			orgLogin: undefined,
 			userName: undefined,
+		});
+		expect(
+			parseWhoami({
+				data: { user: { id: "user_1", userName: "alice" }, org: { id: "org_1" } },
+			}),
+		).toEqual({
+			userId: "user_1",
+			orgId: "org_1",
+			orgLogin: undefined,
+			userName: "alice",
 		});
 	});
 });
@@ -1544,14 +1574,20 @@ describe("commandcode-usage — parseCredits", () => {
 				freeCredits: 5,
 				planId: "individual-plus",
 			},
+			windowLimits: {
+				fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
+				weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
+			},
 		},
 	};
-	test("parses credits fixture", () => {
+	test("parses credits fixture with window limits", () => {
 		expect(parseCredits(creditsFixture)).toEqual({
 			monthlyCredits: 100,
 			purchasedCredits: 20,
 			freeCredits: 5,
 			planId: "individual-plus",
+			fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
+			weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
 		});
 	});
 	test("returns null when credits absent", () => {
@@ -1559,12 +1595,14 @@ describe("commandcode-usage — parseCredits", () => {
 		expect(parseCredits(null)).toBeNull();
 		expect(parseCredits({ data: { credits: {} } })).toBeNull();
 	});
-	test("defaults missing numeric fields to 0", () => {
+	test("defaults missing numeric fields to 0 and window limits to undefined", () => {
 		expect(parseCredits({ data: { credits: { monthlyCredits: 50 } } })).toEqual({
 			monthlyCredits: 50,
 			purchasedCredits: 0,
 			freeCredits: 0,
 			planId: undefined,
+			fiveHour: undefined,
+			weekly: undefined,
 		});
 	});
 });
@@ -1628,7 +1666,7 @@ describe("commandcode-usage — parseSummary", () => {
 });
 
 describe("commandcode-usage — buildUsageReport", () => {
-	const whoami = { orgId: "org_123", orgLogin: "my-org", userName: "alice" };
+	const whoami = { userId: "user_123", orgId: "org_123", orgLogin: "my-org", userName: "alice" };
 	const credits = {
 		monthlyCredits: 100,
 		purchasedCredits: 20,
@@ -1749,7 +1787,7 @@ describe("commandcode-usage — buildUsageReport", () => {
 	});
 	test("falls back to orgLogin then orgId for account label", () => {
 		const r1 = buildUsageReport({
-			whoami: { orgId: "org_1", orgLogin: "my-org" },
+			whoami: { userId: "user_1", orgId: "org_1", orgLogin: "my-org" },
 			credits,
 			subscription: null,
 			summary: null,
@@ -1757,18 +1795,28 @@ describe("commandcode-usage — buildUsageReport", () => {
 		});
 		expect(r1.metadata?.account).toBe("my-org");
 		const r2 = buildUsageReport({
-			whoami: { orgId: "org_1" },
+			whoami: { userId: "user_1", orgId: "org_1" },
 			credits,
 			subscription: null,
 			summary: null,
 			fetchedAt: 1,
 		});
-		expect(r2.metadata?.account).toBe("org_1");
+		expect(r2.metadata?.account).toBe("user_1");
 	});
-	test("emits 7d and 5h windowId limits sharing the credits usedFraction", () => {
+	test("emits 7d and 5h windowId limits from credits window limits", () => {
 		const summary = { totalCost: 25, topModels: ["claude-sonnet-4", "gpt-4o"] };
-		const report = buildUsageReport({ whoami, credits, subscription, summary, fetchedAt: 1_000 });
-		const creditsLimit = report.limits.find((l) => l.id === "commandcode:credits");
+		const windowedCredits = {
+			...credits,
+			fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
+			weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
+		};
+		const report = buildUsageReport({
+			whoami,
+			credits: windowedCredits,
+			subscription,
+			summary,
+			fetchedAt: 1_000,
+		});
 		const w7d = report.limits.find((l) => l.id === "commandcode:usage:7d");
 		const w5h = report.limits.find((l) => l.id === "commandcode:usage:5h");
 		expect(w7d).toBeDefined();
@@ -1776,19 +1824,21 @@ describe("commandcode-usage — buildUsageReport", () => {
 		expect(w7d?.scope.windowId).toBe("7d");
 		expect(w5h?.scope.windowId).toBe("5h");
 		expect(w7d?.scope.provider).toBe(PROVIDER_ID);
-		expect(w7d?.scope.orgId).toBe("org_123");
+		expect(w7d?.scope.accountId).toBe("user_123");
 		expect(w7d?.label).toBe("Command Code Usage (7d)");
 		expect(w5h?.label).toBe("Command Code Usage (5h)");
-		expect(w7d?.amount.usedFraction).toBe(creditsLimit?.amount.usedFraction);
-		expect(w5h?.amount.usedFraction).toBe(creditsLimit?.amount.usedFraction);
+		expect(w7d?.amount.used).toBe(34.5);
+		expect(w7d?.amount.limit).toBe(35);
+		expect(w7d?.amount.usedFraction).toBeCloseTo(34.5 / 35);
 		expect(w7d?.amount.unit).toBe("usd");
-		expect(w7d?.status).toBe(creditsLimit?.status);
-		expect(w7d?.window?.resetsAt).toBe(Date.parse("2026-09-01T00:00:00Z"));
+		expect(w7d?.status).toBe("warning");
+		expect(w7d?.notes).toEqual(["Limit reached"]);
+		expect(w7d?.window?.resetsAt).toBe(1787764197647);
 		expect(report.limits.some((l) => l.id === "commandcode:credits")).toBe(true);
 		expect(report.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(true);
 		expect(report.limits.some((l) => l.id === "commandcode:summary")).toBe(true);
 	});
-	test("omits windowId limits when usedFraction is undefined", () => {
+	test("omits windowId limits when credits carry no window limits", () => {
 		const report = buildUsageReport({
 			whoami,
 			credits: { monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0 },
@@ -1834,7 +1884,12 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 		const seen: { url: string; signal: AbortSignal | undefined }[] = [];
 		const fetchImpl = makeFetch(
 			{
-				whoami: { data: { user: { userName: "alice" }, org: { id: "org_123", login: "my-org" } } },
+				whoami: {
+					data: {
+						user: { id: "user_123", userName: "alice" },
+						org: { id: "org_123", login: "my-org" },
+					},
+				},
 				credits: {
 					data: {
 						credits: {
@@ -1842,6 +1897,10 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 							purchasedCredits: 20,
 							freeCredits: 5,
 							planId: "individual-plus",
+						},
+						windowLimits: {
+							fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
+							weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
 						},
 					},
 				},
@@ -1855,7 +1914,7 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 						},
 					},
 				},
-				summary: { data: { totalCost: 25, costByModel: { a: 10, b: 5 } } },
+				summary: { totalCost: 25, totalTokens: 100, totalCount: 5 },
 			},
 			seen,
 		);
@@ -1886,7 +1945,7 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 	});
 	test("returns null when credits fails", async () => {
 		const fetchImpl = makeFetch({
-			whoami: { data: { org: { id: "org_1" } } },
+			whoami: { data: { user: { id: "user_1" } } },
 			credits: {},
 			subscriptions: { data: { data: {} } },
 		});
@@ -1920,8 +1979,13 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 	});
 	test("fetchCommandCodeUsageReports wraps single report", async () => {
 		const fetchImpl = makeFetch({
-			whoami: { data: { org: { id: "org_1" } } },
-			credits: { data: { credits: { monthlyCredits: 10 } } },
+			whoami: { data: { user: { id: "user_1" } } },
+			credits: {
+				data: {
+					credits: { monthlyCredits: 10 },
+					windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+				},
+			},
 			subscriptions: { data: { data: {} } },
 		});
 		const reports = await fetchCommandCodeUsageReports({
@@ -1974,13 +2038,18 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 				const url = urlOf(input);
 				if (url.includes("/alpha/whoami"))
 					return new Response(
-						JSON.stringify({ data: { org: { id: "org_1" }, user: { userName: "alice" } } }),
+						JSON.stringify({
+							data: { org: { id: "org_1" }, user: { id: "user_1", userName: "alice" } },
+						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
 					);
 				if (url.includes("/alpha/billing/credits"))
 					return new Response(
 						JSON.stringify({
-							data: { credits: { monthlyCredits: 100, purchasedCredits: 10, freeCredits: 0 } },
+							data: {
+								credits: { monthlyCredits: 100, purchasedCredits: 10, freeCredits: 0 },
+								windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+							},
 						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
 					);
@@ -2013,10 +2082,13 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 		const staleCC: UsageReport = { provider: PROVIDER_ID, fetchedAt: 1, limits: [] };
 		const storage = asAuthStorage({
 			getApiKey: async () => "user_test",
+			listStoredCredentials: () => [
+				{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "user_test" } },
+			],
 			fetchUsageReports: async (): Promise<UsageReport[] | null> => [origReport, staleCC],
 		});
 		const realFetch = globalThis.fetch;
-		globalThis.fetch = makeUsageFetch({ data: { totalCost: 5 } });
+		globalThis.fetch = makeUsageFetch({ totalCost: 5 });
 		try {
 			const fakePi = asExtensionApi({
 				on: (event: string, fn: SessionHandler) => {
@@ -2035,9 +2107,11 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 			expect(reports).not.toBeNull();
 			expect(reports?.some((r) => r.provider === "anthropic")).toBe(true);
 			expect(reports?.filter((r) => r.provider === PROVIDER_ID)).toHaveLength(1);
-			expect(reports?.find((r) => r.provider === PROVIDER_ID)?.limits[0]?.id).toBe(
-				"commandcode:credits",
-			);
+			expect(
+				reports
+					?.find((r) => r.provider === PROVIDER_ID)
+					?.limits.some((l) => l.id === "commandcode:credits"),
+			).toBe(true);
 		} finally {
 			globalThis.fetch = realFetch;
 		}
@@ -2046,10 +2120,13 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 		const origReport: UsageReport = { provider: "anthropic", fetchedAt: 1, limits: [] };
 		const storage = asAuthStorage({
 			getApiKey: async () => "user_test",
+			listStoredCredentials: () => [
+				{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "user_test" } },
+			],
 			fetchUsageReports: async (): Promise<UsageReport[] | null> => [origReport],
 		});
 		const realFetch = globalThis.fetch;
-		globalThis.fetch = makeUsageFetch({ data: { totalCost: 5 } });
+		globalThis.fetch = makeUsageFetch({ totalCost: 5 });
 		try {
 			const fakePi = asExtensionApi({
 				on: (event: string, fn: SessionHandler) => {
@@ -2099,6 +2176,9 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 		const seenUrls: string[] = [];
 		const storage = asAuthStorage({
 			getApiKey: async () => "user_test",
+			listStoredCredentials: () => [
+				{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "user_test" } },
+			],
 			fetchUsageReports: async (): Promise<UsageReport[] | null> => [],
 		});
 		const customBase = "https://custom.example.com";
@@ -2108,21 +2188,26 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 				seenUrls.push(urlOf(input));
 				const url = urlOf(input);
 				if (url.includes("/alpha/whoami"))
-					return new Response(JSON.stringify({ data: { org: { id: "org_1" } } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({ data: { user: { id: "user_1" }, org: { id: "org_1" } } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
 				if (url.includes("/alpha/billing/credits"))
-					return new Response(JSON.stringify({ data: { credits: { monthlyCredits: 10 } } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({
+							data: {
+								credits: { monthlyCredits: 10 },
+								windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
 				if (url.includes("/alpha/billing/subscriptions"))
 					return new Response(JSON.stringify({ data: { data: {} } }), {
 						status: 200,
 						headers: { "Content-Type": "application/json" },
 					});
-				return new Response(JSON.stringify({ data: { totalCost: 0 } }), {
+				return new Response(JSON.stringify({ totalCost: 0 }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -2156,6 +2241,9 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 		const originReports: UsageReport[] = [{ provider: "anthropic", fetchedAt: 1, limits: [] }];
 		const storage = asAuthStorage({
 			getApiKey: async () => "user_test",
+			listStoredCredentials: () => [
+				{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "user_test" } },
+			],
 			fetchUsageReports: async (): Promise<UsageReport[] | null> => {
 				originCalls += 1;
 				return originReports;
@@ -2168,21 +2256,26 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 				commandcodeFetches += 1;
 				const url = urlOf(input);
 				if (url.includes("/alpha/whoami"))
-					return new Response(JSON.stringify({ data: { org: { id: "org_1" } } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({ data: { user: { id: "user_1" }, org: { id: "org_1" } } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
 				if (url.includes("/alpha/billing/credits"))
-					return new Response(JSON.stringify({ data: { credits: { monthlyCredits: 10 } } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({
+							data: {
+								credits: { monthlyCredits: 10 },
+								windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
 				if (url.includes("/alpha/billing/subscriptions"))
 					return new Response(JSON.stringify({ data: { data: {} } }), {
 						status: 200,
 						headers: { "Content-Type": "application/json" },
 					});
-				return new Response(JSON.stringify({ data: { totalCost: 0 } }), {
+				return new Response(JSON.stringify({ totalCost: 0 }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
