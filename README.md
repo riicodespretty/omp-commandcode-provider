@@ -155,7 +155,7 @@ Each request uses the resolved base URL and the same headers as model traffic, f
 
 ### Status line
 
-The report also drives the host's status-line `usage` segment when Command Code is the active provider. It carries `7d` and `5h` windowed limits, each with its own used fraction (`used` against `limit`), which the host renders as `7d <pct>%` and `5h <pct>%` with the window's reset.
+The status-line `usage` segment renders only for built-in providers, so it does not show for Command Code. The plugin's usage reports supply the `/usage` command and `/usage-commandcode` in its place.
 
 The `cache_hit` segment reads the session's summed `cacheRead / (cacheRead + cacheWrite + input)`. The plugin splits cached tokens out of the gateway's `inputTokens` when the wire reports them inside it (OpenAI-style), and keeps them separate when the gateway reports them additively (Anthropic-style)—so the rate reflects the real hit ratio rather than capping at 50%.
 
