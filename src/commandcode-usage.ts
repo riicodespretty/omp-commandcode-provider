@@ -6,7 +6,6 @@ import {
 	isJsonNumber,
 	isJsonObject,
 	isJsonString,
-	lookup,
 	type JsonValue,
 } from "./guards";
 
@@ -234,11 +233,11 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 	limits.push({
 		id: "commandcode:credits",
 		label: "Command Code Credits",
-		scope,
+		scope: { ...scope, windowId: "monthly" },
 		window: resetsAt
 			? {
-					id: "period",
-					label: "Billing period",
+					id: "monthly",
+					label: "Monthly limit",
 					resetsAt,
 				}
 			: undefined,
@@ -251,25 +250,6 @@ export function buildUsageReport(input: BuildUsageReportInput): UsageReport {
 		},
 		status: statusFor(usedFraction),
 	});
-
-	if (planId && credits.monthlyCredits > 0) {
-		limits.push({
-			id: `commandcode:plan:${planId}`,
-			label: `Plan — ${lookup(PLAN_NAMES, planId) ?? planId}`,
-			scope,
-			amount: { limit: credits.monthlyCredits, unit: "usd" },
-		});
-	}
-
-	if (summary && summary.totalCost > 0) {
-		limits.push({
-			id: "commandcode:summary",
-			label: "Usage since period start",
-			scope,
-			amount: { used: summary.totalCost, unit: "usd" },
-			notes: summary.topModels ? [`Top models: ${summary.topModels.join(", ")}`] : undefined,
-		});
-	}
 
 	return {
 		provider: PROVIDER_ID,
@@ -362,16 +342,22 @@ export async function fetchCommandCodeUsageForKeys(
 	keys: readonly string[],
 	options: Omit<CommandCodeUsageOptions, "apiKey">,
 ): Promise<UsageReport[]> {
+	const seen = new Set<string>();
 	const reports: UsageReport[] = [];
 	for (const apiKey of keys) {
 		// One account fails independently of the others; a bad key must not
 		// hide the remaining accounts, so each fetch is isolated here.
+		let report: UsageReport | null = null;
 		try {
-			const report = await fetchCommandCodeUsage({ ...options, apiKey });
-			if (report) reports.push(report);
+			report = await fetchCommandCodeUsage({ ...options, apiKey });
 		} catch {
 			// skip this account
 		}
+		if (!report) continue;
+		const accountId = report.metadata?.accountId ?? report.metadata?.userId;
+		if (isJsonString(accountId) && seen.has(accountId)) continue;
+		if (isJsonString(accountId)) seen.add(accountId);
+		reports.push(report);
 	}
 	return reports;
 }

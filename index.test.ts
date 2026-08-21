@@ -35,9 +35,9 @@ import { capabilitiesForModel, DEFAULT_MODEL_ID, MODEL_CAPABILITIES } from "./sr
 import { costForModel, MODEL_COSTS, ZERO_COST } from "./src/pricing";
 import { createCommandCodeStream } from "./src/stream";
 import {
-	PLAN_NAMES,
 	buildUsageReport,
 	fetchCommandCodeUsage,
+	fetchCommandCodeUsageForKeys,
 	fetchCommandCodeUsageReports,
 	mergeCommandCodeReport,
 	parseCredits,
@@ -1481,9 +1481,15 @@ describe("extension registration", () => {
 
 		expect(notified.length).toBe(1);
 		const text = notified[0] ?? "";
-		expect(text).toContain("Command Code — alice");
-		expect(text).toContain("Command Code Credits");
-		expect(text).toContain("25.00 USD");
+		expect(text).toContain("5 Hour limit");
+		expect(text).toContain("Weekly limit");
+		expect(text).toContain("Monthly limit");
+		expect(text).toContain("alice");
+		expect(text).toMatch(/\[[█░]+\]/);
+		expect(text).toMatch(/% free/);
+		expect(text).toMatch(/⚠ Limit reached/);
+		expect(text).toMatch(/\(\d+[dhms](?:\d+[dhms])?\)/);
+		expect(text).not.toMatch(/resets \d{4}-\d{2}-\d{2}/);
 	});
 
 	test("session_start wires omp's session id onto the wire header", async () => {
@@ -1693,7 +1699,7 @@ describe("commandcode-usage — buildUsageReport", () => {
 		expect(creditsLimit?.amount.unit).toBe("usd");
 		expect(creditsLimit?.scope.provider).toBe(PROVIDER_ID);
 		expect(creditsLimit?.scope.shared).toBe(true);
-		expect(creditsLimit?.window?.id).toBe("period");
+		expect(creditsLimit?.window?.id).toBe("monthly");
 		expect(creditsLimit?.window?.resetsAt).toBe(Date.parse("2026-09-01T00:00:00Z"));
 		expect(creditsLimit?.status).toBe("ok");
 	});
@@ -1731,13 +1737,6 @@ describe("commandcode-usage — buildUsageReport", () => {
 		});
 		expect(unknown.limits[0]?.status).toBe("unknown");
 	});
-	test("adds plan limit when planId known and monthlyCredits > 0", () => {
-		const report = buildUsageReport({ whoami, credits, subscription, summary: null, fetchedAt: 1 });
-		const plan = report.limits.find((l) => l.id === "commandcode:plan:individual-plus");
-		expect(plan).toBeDefined();
-		expect(plan?.label).toBe(`Plan — ${PLAN_NAMES["individual-plus"]}`);
-		expect(plan?.amount.limit).toBe(100);
-	});
 	test("omits plan limit when monthlyCredits is 0 or plan unknown", () => {
 		const noPlan = buildUsageReport({
 			whoami,
@@ -1747,18 +1746,6 @@ describe("commandcode-usage — buildUsageReport", () => {
 			fetchedAt: 1,
 		});
 		expect(noPlan.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(false);
-	});
-	test("adds summary limit and topModels note when totalCost > 0", () => {
-		const report = buildUsageReport({
-			whoami,
-			credits,
-			subscription,
-			summary: { totalCost: 12.5, topModels: ["a", "b"] },
-			fetchedAt: 1,
-		});
-		const summaryLimit = report.limits.find((l) => l.id === "commandcode:summary");
-		expect(summaryLimit?.amount.used).toBe(12.5);
-		expect(summaryLimit?.notes?.[0]).toContain("a");
 	});
 	test("omits summary limit when totalCost is 0 or summary null", () => {
 		const r1 = buildUsageReport({ whoami, credits, subscription, summary: null, fetchedAt: 1 });
@@ -1835,8 +1822,8 @@ describe("commandcode-usage — buildUsageReport", () => {
 		expect(w7d?.notes).toEqual(["Limit reached"]);
 		expect(w7d?.window?.resetsAt).toBe(1787764197647);
 		expect(report.limits.some((l) => l.id === "commandcode:credits")).toBe(true);
-		expect(report.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(true);
-		expect(report.limits.some((l) => l.id === "commandcode:summary")).toBe(true);
+		expect(report.limits.some((l) => l.id.startsWith("commandcode:plan:"))).toBe(false);
+		expect(report.limits.some((l) => l.id === "commandcode:summary")).toBe(false);
 	});
 	test("omits windowId limits when credits carry no window limits", () => {
 		const report = buildUsageReport({
@@ -1996,6 +1983,33 @@ describe("commandcode-usage — fetchCommandCodeUsage", () => {
 		expect(reports).toHaveLength(1);
 		expect(reports?.[0]?.provider).toBe(PROVIDER_ID);
 	});
+	test("fetchCommandCodeUsageForKeys dedups accounts by userId", async () => {
+		let whoamiCalls = 0;
+		const fetchImpl = makeFetch({
+			whoami: { data: { user: { id: "user_same", userName: "alice" } } },
+			credits: {
+				data: {
+					credits: { monthlyCredits: 10 },
+					windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+				},
+			},
+			subscriptions: { data: { data: {} } },
+		});
+		const countingFetch = Object.assign(
+			async (input: URL | RequestInfo, init?: RequestInit) => {
+				if (urlOf(input).includes("/alpha/whoami")) whoamiCalls += 1;
+				return fetchImpl(input, init);
+			},
+			{ preconnect: () => undefined },
+		);
+		const reports = await fetchCommandCodeUsageForKeys(["key_a", "key_b"], {
+			baseUrl: "https://api.commandcode.ai",
+			fetchImpl: countingFetch,
+		});
+		expect(whoamiCalls).toBe(2);
+		expect(reports).toHaveLength(1);
+		expect(reports[0]?.metadata?.accountId).toBe("user_same");
+	});
 });
 
 describe("commandcode-usage — mergeCommandCodeReport", () => {
@@ -2112,6 +2126,94 @@ describe("commandcode-usage — extension fetchUsageReports wrapper", () => {
 					?.find((r) => r.provider === PROVIDER_ID)
 					?.limits.some((l) => l.id === "commandcode:credits"),
 			).toBe(true);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+	test("preserves every commandcode account when more than one is stored (merge regression)", async () => {
+		const hostReport: UsageReport[] = [{ provider: "anthropic", fetchedAt: 1, limits: [] }];
+		const storage = asAuthStorage({
+			listStoredCredentials: () => [
+				{ id: 1, provider: PROVIDER_ID, credential: { type: "api_key", key: "key_a" } },
+				{ id: 2, provider: PROVIDER_ID, credential: { type: "api_key", key: "key_b" } },
+			],
+			fetchUsageReports: async (): Promise<UsageReport[] | null> => hostReport,
+		});
+		const accounts = [
+			{ id: "acct_7f3a", userName: "user_alpha_9" },
+			{ id: "acct_c2d8", userName: "user_beta_5" },
+		];
+		let whoamiCalls = 0;
+		const twoAccountFetch = Object.assign(
+			async (input: URL | RequestInfo) => {
+				const url = urlOf(input);
+				if (url.includes("/alpha/whoami")) {
+					const account = accounts[whoamiCalls] ?? accounts[0];
+					whoamiCalls += 1;
+					return new Response(JSON.stringify({ data: { org: null, user: account } }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				if (url.includes("/alpha/billing/credits"))
+					return new Response(
+						JSON.stringify({
+							data: {
+								credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 },
+								windowLimits: { fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } },
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				if (url.includes("/alpha/billing/subscriptions"))
+					return new Response(
+						JSON.stringify({
+							data: {
+								data: {
+									planId: "individual-plus",
+									status: "active",
+									currentPeriodStart: "2026-08-01T00:00:00Z",
+									currentPeriodEnd: "2026-09-01T00:00:00Z",
+								},
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				if (url.includes("/alpha/usage/summary"))
+					return new Response(JSON.stringify({ totalCost: 5 }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				return new Response(JSON.stringify({}), { status: 404 });
+			},
+			{ preconnect: () => undefined },
+		);
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = twoAccountFetch;
+		try {
+			const fakePi = asExtensionApi({
+				on: (event: string, fn: SessionHandler) => {
+					if (event === "session_start")
+						fn(undefined, {
+							modelRegistry: { authStorage: storage },
+							sessionManager: { getSessionId: () => "sess-1" },
+							cwd: "/tmp/cc-test",
+						});
+				},
+				registerProvider: () => {},
+				registerCommand: () => {},
+			});
+			commandCodeProvider(fakePi);
+			const reports = await storage.fetchUsageReports();
+			expect(reports).not.toBeNull();
+			expect(reports?.some((r) => r.provider === "anthropic")).toBe(true);
+			const ccReports = reports?.filter((r) => r.provider === PROVIDER_ID) ?? [];
+			expect(ccReports).toHaveLength(2);
+			const accountIds = ccReports
+				.map((r) => r.metadata?.accountId)
+				.map((id) => String(id))
+				.sort();
+			expect(accountIds).toEqual(["acct_7f3a", "acct_c2d8"]);
 		} finally {
 			globalThis.fetch = realFetch;
 		}

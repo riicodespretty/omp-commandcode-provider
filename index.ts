@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { API_ID, PROVIDER_ID, resolveBaseUrl } from "./src/api";
 import { fetchCommandCodeModels, resolveModelsTimeoutMs, resolveModelsUrl } from "./src/catalog";
-import { fetchCommandCodeUsageForKeys, mergeCommandCodeReport } from "./src/commandcode-usage";
+import { fetchCommandCodeUsageForKeys } from "./src/commandcode-usage";
 import { isCallable, isJsonString } from "./src/guards";
 import { loginWithCommandCode } from "./src/login";
 import { createCommandCodeStream } from "./src/stream";
@@ -14,37 +14,62 @@ let getSessionId: () => string | undefined = () => undefined;
 let projectSlug = "0000000000";
 const wrappedStorages = new WeakSet<object>();
 
-function formatUsageForNotify(reports: UsageReport[] | null): string {
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.max(0, Math.round(ms / 1000));
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const remainderSeconds = totalSeconds % 60;
+	if (minutes < 60) return `${minutes}m${remainderSeconds}s`;
+	const hours = Math.floor(minutes / 60);
+	const remainderMinutes = minutes % 60;
+	if (hours < 24) return `${hours}h${remainderMinutes}m`;
+	const days = Math.floor(hours / 24);
+	const remainderHours = hours % 24;
+	return `${days}d${remainderHours}h`;
+}
+
+function asciiBar(fraction: number | undefined, width = 24): string {
+	if (fraction === undefined) return `[${"·".repeat(width)}]`;
+	const clamped = Math.min(Math.max(fraction, 0), 1);
+	const filled = Math.round(clamped * width);
+	return `[${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}]`;
+}
+
+const WINDOW_LABELS: ReadonlyArray<{ id: string; title: string }> = [
+	{ id: "5h", title: "5 Hour limit" },
+	{ id: "7d", title: "Weekly limit" },
+	{ id: "monthly", title: "Monthly limit" },
+];
+
+function formatUsageForNotify(reports: UsageReport[] | null, now = Date.now()): string {
 	if (!reports || reports.length === 0) return "No Command Code usage data available.";
-	const sections = reports.map((report) => {
-		const rawAccount = report.metadata?.account;
-		const account = isJsonString(rawAccount) ? rawAccount : "account";
-		const lines = report.limits.map((limit) => {
-			const used = limit.amount.used ?? limit.amount.usedFraction;
-			const suffix =
-				limit.amount.unit === "percent"
-					? "%"
-					: limit.amount.unit === "usd"
-						? " USD"
-						: ` ${limit.amount.unit}`;
-			const usedText =
-				used === undefined
-					? "unknown"
-					: Number.isFinite(used)
-						? `${used.toFixed(2)}${suffix}`
-						: String(used);
-			const reset = limit.window?.resetsAt
-				? ` (resets ${new Date(limit.window.resetsAt).toISOString().slice(0, 10)})`
-				: "";
-			const pct =
-				limit.amount.usedFraction !== undefined
-					? ` (${(limit.amount.usedFraction * 100).toFixed(0)}%)`
+	const lines: string[] = [];
+	for (const window of WINDOW_LABELS) {
+		const rows: string[] = [];
+		for (const report of reports) {
+			const limit = report.limits.find((l) => l.scope.windowId === window.id);
+			if (!limit) continue;
+			const rawAccount = report.metadata?.account;
+			const account = isJsonString(rawAccount) ? rawAccount : "account";
+			const reset =
+				limit.window?.resetsAt && limit.window.resetsAt > now
+					? ` (${formatDuration(limit.window.resetsAt - now)})`
 					: "";
-			return `- ${limit.label}: ${usedText}${pct}${reset}`;
-		});
-		return [`Command Code — ${account}`, ...lines].join("\n");
-	});
-	return sections.join("\n\n");
+			const fraction = limit.amount.usedFraction;
+			const reached = limit.notes?.includes("Limit reached");
+			const suffix = reached
+				? "  ⚠ Limit reached"
+				: fraction === undefined
+					? ""
+					: ` ${Math.max(0, 100 - Math.round(fraction * 100)).toFixed(1)}% free`;
+			rows.push(`${account}${reset}`);
+			rows.push(`${asciiBar(fraction)}${suffix}`);
+		}
+		if (rows.length === 0) continue;
+		lines.push(window.title);
+		for (const row of rows) lines.push(`  ${row}`);
+	}
+	return lines.join("\n");
 }
 
 function storedApiKeys(rows: StoredAuthCredential[]): string[] {
@@ -130,9 +155,11 @@ export default function commandCodeProvider(pi: ExtensionAPI): void {
 			} catch {
 				return otherReports;
 			}
-			let merged = otherReports;
-			for (const report of reports) merged = mergeCommandCodeReport(merged, report);
-			return merged;
+			const others =
+				otherReports && otherReports.length > 0
+					? otherReports.filter((entry) => entry.provider !== PROVIDER_ID)
+					: [];
+			return others.length > 0 || reports.length > 0 ? [...others, ...reports] : null;
 		};
 		wrappedStorages.add(raw);
 	});
