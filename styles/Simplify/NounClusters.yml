@@ -1,0 +1,14 @@
+# STE rule 2.1
+extends: sequence
+message: "ASD-STE100 2.1: Multi-word noun '%s' exceeds three words. Write multi-word nouns of no more than three words."
+link: https://asd-ste100.org/
+level: suggestion
+tokens:
+  - tag: 'NN.*|JJ.*|VBG|VBN|CD'
+    pattern: '.*[a-z0-9].*'
+  - tag: 'NN.*|JJ.*|VBG|VBN|CD'
+    pattern: '.*[a-z0-9].*'
+  - tag: 'NN.*|JJ.*|VBG|VBN|CD'
+    pattern: '.*[a-z0-9].*'
+  - tag: 'NN.*'
+    pattern: '.*[a-z0-9].*'

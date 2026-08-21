@@ -1,0 +1,33 @@
+# STE rule GR-6
+---
+extends: substitution
+message: "ASD-STE100 GR-6: Do not use Latin abbreviations. Use '%s' instead of '%s' (STE recommends rewriting rather than using 'and so on')."
+link: https://asd-ste100.org/
+level: error
+ignorecase: true
+nonword: true
+action:
+  name: replace
+swap:
+  '\b(?:e\.g\.|eg\.)(?=[\s,;:?!\)\]]|$)': 'for example'
+  '\b(?:i\.e\.|ie\.)(?=[\s,;:?!\)\]]|$)': 'that is'
+  '\betc\.(?=[\s,;:?!\)\]]|$)|\betc\b': 'and so on'
+  '\bet\s+al\.(?=[\s,;:?!\)\]]|$)|\bet\s+al\b|\bet\.\s+al\.': 'and others'
+  '\bviz\.(?=[\s,;:?!\)\]]|$)|\bviz\b': 'namely'
+  '\bN\.B\.(?=[\s,;:?!\)\]]|$)|\bN\.B\b|\bNB\b': 'note'
+  '\bcf\.(?=[\s,;:?!\)\]]|$)': 'compare'
+  '\bvs\.(?=[\s,;:?!\)\]]|$)|\bvs\b': 'against'
+  '\bca\.(?=[\s,;:?!\)\]]|$)': 'about'
+  '\bibid\.(?=[\s,;:?!\)\]]|$)|\bibid\b': 'in the same place'
+  '\bq\.v\.(?=[\s,;:?!\)\]]|$)|\bq\.v\b|\bqv\b': 'refer to'
+  '\ba\.k\.a\.(?=[\s,;:?!\)\]]|$)|\ba\.k\.a\b|\baka\b': 'also known as'
+  '\binter\s+alia\b': 'among other things'
+  '\bper\s+se\b': 'by itself'
+  '\bad\s+hoc\b': 'special'
+  '\bde\s+facto\b': 'in practice'
+  '\bvice\s+versa\b': 'conversely'
+  '\bstatus\s+quo\b': 'current state'
+  '\bergo\b': 'therefore'
+  '\bpassim\b': 'throughout'
+  '\bop\.\s*cit\.(?=[\s,;:?!\)\]]|$)|\bop\.\s*cit\b': 'in the work cited'
+  '\bloc\.\s*cit\.(?=[\s,;:?!\)\]]|$)|\bloc\.\s*cit\b': 'in the place cited'

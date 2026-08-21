@@ -1,0 +1,8 @@
+# STE rules 4.1, 6.3
+extends: occurrence
+message: "ASD-STE100 6.3: this sentence has %d words. Descriptive writing takes a maximum of 25. The count treats a parenthetical, a hyphenated compound, a quoted string, and a number with its unit (including spelled-out units) as one word; multi-word proper nouns are counted word-by-word."
+link: https://asd-ste100.org/
+level: suggestion
+scope: sentence
+max: 25
+token: '"[^"]+"|\([^)]+\)|\b\d+(?:[.,]\d+)?(?:\s*(?:degrees?\s+(?:Celsius|Fahrenheit|Kelvin|C|F)|[°º][CF]|millimeters?|millimetres?|centimeters?|centimetres?|meters?|metres?|kilometers?|kilometres?|inches?|feet|foot|yards?|miles?|nautical\s+miles?|milligrams?|grams?|kilograms?|tonnes?|tons?|pounds?(?:\s+per\s+square\s+inch)?|ounces?|newton(?:\s+met(?:er|re)s?)?|newtons?|kilo(?:pascals?|watts?|grams?|meters?|metres?|volts?|hertz|ohms?)|mega(?:pascals?|watts?|hertz|ohms?|volts?)|giga(?:hertz|watts?)|milli(?:meters?|metres?|lit(?:er|re)s?|grams?|volts?|amperes?|amps?|watts?)|pascals?|bars?|volts?|amperes?|amps?|watts?|ohms?|hertz|lit(?:er|re)s?|gallons?|quarts?|pints?|seconds?|minutes?|hours?|days?|revolutions?\s+per\s+minute|rpm|knots?|decibels?|percent|degrees?|radians?|[°º]|mm|cm|m|km|in|ft|yd|psi|Nm|kg|g|mg|V|kV|A|mA|W|kW|Hz|kHz|MHz|GHz|dB|bar|Pa|kPa|MPa|lb|oz|gal|qt|pt|l|ml|s|sec|min|hr))\b|\b\w+(?:[-’'']\w+)*\b'

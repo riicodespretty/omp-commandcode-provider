@@ -1,0 +1,143 @@
+# STE rule GR-7
+---
+extends: substitution
+message: "ASD-STE100 GR-7: Use gender-neutral language. Use '%s' instead of '%s'."
+link: https://asd-ste100.org/
+level: warning
+ignorecase: true
+action:
+  name: replace
+swap:
+  he: the operator|the technician
+  she: the operator|the technician
+  him: the operator|the technician
+  her: the operator|the technician|the
+  his: the
+  hers: the operator's|the technician's
+  himself: the operator|the technician
+  herself: the operator|the technician
+  man: person
+  men: people|personnel
+  woman: person
+  women: people|personnel
+  mankind: people
+  manpower: personnel|effort
+  manned: crewed
+  unmanned: uncrewed|autonomous
+  manning: staffing|crewing
+  spokesman: spokesperson
+  spokesmen: spokespersons
+  spokeswoman: spokesperson
+  spokeswomen: spokespersons
+  chairman: chair|chairperson
+  chairmen: chairs|chairpersons
+  chairwoman: chair|chairperson
+  chairwomen: chairs|chairpersons
+  workman: worker
+  workmen: workers
+  layman: non-specialist
+  laymen: non-specialists
+  craftsman: artisan|specialist|technician
+  craftsmen: artisans|specialists|technicians
+  repairman: technician
+  repairmen: technicians
+  serviceman: technician
+  servicemen: technicians
+  foreman: supervisor
+  foremen: supervisors
+  salesman: salesperson
+  salesmen: salespeople
+  saleswoman: salesperson
+  saleswomen: salespeople
+  fireman: firefighter
+  firemen: firefighters
+  firewoman: firefighter
+  firewomen: firefighters
+  policeman: police officer
+  policemen: police officers
+  policewoman: police officer
+  policewomen: police officers
+  postman: mail carrier|postal worker
+  postmen: mail carriers|postal workers
+  postwoman: mail carrier|postal worker
+  postwomen: mail carriers|postal workers
+  mailman: mail carrier|postal worker
+  mailmen: mail carriers|postal workers
+  mailwoman: mail carrier|postal worker
+  mailwomen: mail carriers|postal workers
+  watchman: guard|security guard
+  watchmen: guards|security guards
+  fisherman: fisher
+  fishermen: fishers
+  seaman: sailor|crew member
+  seamen: sailors|crew members
+  councilman: council member
+  councilmen: council members
+  councilwoman: council member
+  councilwomen: council members
+  tradesman: trades worker|craftsperson|technician
+  tradesmen: trades workers|craftspeople|technicians
+  ombudsman: ombudsperson|ombud
+  ombudsmen: ombudspersons|ombuds
+  handyman: handyworker|maintenance worker|technician
+  handymen: handyworkers|maintenance workers|technicians
+  statesman: statesperson|diplomat|official
+  statesmen: statespersons|diplomats|officials
+  cameraman: camera operator
+  cameramen: camera operators
+  camerawoman: camera operator
+  camerawomen: camera operators
+  anchorman: news anchor|anchor
+  anchormen: news anchors|anchors
+  anchorwoman: news anchor|anchor
+  anchorwomen: news anchors|anchors
+  weatherman: meteorologist
+  weathermen: meteorologists
+  weatherwoman: meteorologist
+  weatherwomen: meteorologists
+  gentleman: person
+  gentlemen: people|persons
+  sportsman: athlete
+  sportsmen: athletes
+  sportsmanship: fair play
+  freshman: first-year student
+  freshmen: first-year students
+  stewardess: flight attendant
+  stewardesses: flight attendants
+  steward: flight attendant
+  stewards: flight attendants
+  waitress: server
+  waitresses: servers
+  waiter: server
+  waiters: servers
+  he or she: the operator|the technician
+  she or he: the operator|the technician
+  he/she: the operator|the technician
+  s/he: the operator|the technician
+  his/her: the
+  his or her: the
+  him/her: the operator|the technician
+  him or her: the operator|the technician
+  man-made: manufactured|synthetic
+  manmade: manufactured|synthetic
+  man-hour: person-hour
+  man-hours: person-hours
+  manhour: person-hour
+  manhours: person-hours
+  airman: aviator|pilot
+  airmen: aviators|pilots
+  lineman: line worker
+  linemen: line workers
+  crewman: crew member
+  crewmen: crew members
+  assemblyman: assembler
+  assemblymen: assemblers
+  draftsman: drafter
+  draftsmen: drafters
+  draughtsman: drafter
+  draughtsmen: drafters
+  businessman: businessperson
+  businessmen: businesspeople
+  businesswoman: businessperson
+  businesswomen: businesspeople
+  clergyman: member of the clergy

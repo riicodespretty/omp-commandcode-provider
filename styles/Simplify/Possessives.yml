@@ -1,0 +1,47 @@
+# STE general recommendation GR-8
+extends: existence
+message: "ASD-STE100 GR-8: Use the possessive form ('s or s') carefully or replace '%s' with an 'of the ...' construction."
+link: https://asd-ste100.org/
+level: suggestion
+ignorecase: true
+raw:
+  - '(?i)\b[a-z0-9]+[''’\u2019]s\b|\b[a-z]+s[''’\u2019](?=\s|[.,;:?!)]|$)'
+exceptions:
+  - "it's"
+  - "that's"
+  - "let's"
+  - "what's"
+  - "there's"
+  - "here's"
+  - "he's"
+  - "she's"
+  - "who's"
+  - "how's"
+  - "where's"
+  - "when's"
+  - "why's"
+  - 'it’s'
+  - 'that’s'
+  - 'let’s'
+  - 'what’s'
+  - 'there’s'
+  - 'here’s'
+  - 'he’s'
+  - 'she’s'
+  - 'who’s'
+  - 'how’s'
+  - 'where’s'
+  - 'when’s'
+  - 'why’s'
+  - "It's"
+  - "That's"
+  - "Let's"
+  - "What's"
+  - "There's"
+  - "Here's"
+  - 'It’s'
+  - 'That’s'
+  - 'Let’s'
+  - 'What’s'
+  - 'There’s'
+  - 'Here’s'

@@ -1,0 +1,50 @@
+# STE rule GR-5
+---
+extends: substitution
+message: "ASD-STE100 GR-5: Consider using '%s' instead of '%s' (check for false-friend usage in technical context)."
+link: https://asd-ste100.org/
+level: suggestion
+ignorecase: true
+action:
+  name: replace
+swap:
+  actual: current
+  actually: in fact
+  actual state: current state
+  comprehensive: complete
+  comprehensively: completely
+  deception: disappointment
+  deceptions: disappointments
+  delay: deadline|time limit
+  delays: deadlines|time limits
+  diagnostic facility: diagnostic equipment|diagnostic tool
+  disposition: instruction|requirement|location
+  dispositions: instructions|requirements|locations
+  eventual: possible
+  eventually: at a later time
+  experience: experiment|test
+  experiences: experiments|tests
+  experienced: tested
+  experiencing: testing
+  facility: equipment|building|tool
+  facilities: equipment|buildings|tools
+  individual: person
+  individuals: persons|people
+  '(?-i:notice)\b(?!\s*:)': information
+  notices: information
+  particular: special|specific
+  particularly: specially|specifically
+  pretend: claim
+  pretended: claimed
+  pretending: claiming
+  pretends: claims
+  realize: make|build
+  realized: made|built
+  realizing: making|building
+  realizes: makes|builds
+  resume: summarize
+  resumed: summarized
+  resumes: summarizes
+  resuming: summarizing
+  sensible: sensitive
+  sensibly: sensitively

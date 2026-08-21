@@ -1,0 +1,8 @@
+# STE rule 8.1
+extends: existence
+message: "ASD-STE100 8.1: Do not use the semicolon ('%s'). Every standard English punctuation mark is allowed except the semicolon."
+link: https://asd-ste100.org/
+level: error
+nonword: true
+raw:
+  - ';'

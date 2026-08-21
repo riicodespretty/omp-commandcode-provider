@@ -1,0 +1,8 @@
+# STE rule 5.3
+extends: existence
+message: "ASD-STE100 5.3: Write instructions in the imperative (command) form instead of '%s'."
+link: https://asd-ste100.org/
+level: warning
+ignorecase: true
+raw:
+  - '(?i)\b(?:(?:the\s+)?[a-z]+(?:\s+[a-z]+)?\s+must\s+be\s+[a-z]+|(?:the\s+)?[a-z]+(?:\s+[a-z]+)?\s+(?:is|are)\s+to\s+be\s+[a-z]+|(?:the\s+)?[a-z]+(?:\s+[a-z]+)?\s+should\s+be\s+[a-z]+|(?:it\s+is|it[''’]s)\s+(?:necessary\s+to|recommended\s+that|required\s+to|important\s+to)|the\s+(?:operator|technician|user|mechanic)\s+(?:must|should)|you\s+(?:must|should)|care\s+(?:should|must)\s+be\s+taken)\b'

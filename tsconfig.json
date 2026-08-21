@@ -7,7 +7,7 @@
 		"noUncheckedIndexedAccess": true,
 		"noEmit": true,
 		"skipLibCheck": true,
-		"types": ["bun", "node"]
+		"types": ["node"]
 	},
 	"include": ["index.ts", "src", "*.test.ts"]
 }

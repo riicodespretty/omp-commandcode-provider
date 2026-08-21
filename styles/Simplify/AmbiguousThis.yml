@@ -1,0 +1,9 @@
+# STE general recommendation GR-4
+extends: existence
+message: "ASD-STE100 GR-4: When you use '%s', ensure the demonstrative pronoun has a clear antecedent or supply a noun."
+link: https://asd-ste100.org/
+level: suggestion
+scope: sentence
+ignorecase: false
+raw:
+  - '^(?i:\s*["''“‘(]?(?:This\s+(?:is|was|are|were|can|will|would|could|should|might|must|may|means|shows|causes|gives|has|had|does|did|operates|prevents|provides|helps|requires|results|contains|includes|consists|serves|allows|indicates|protects|affects|changes|stops|starts|controls|leads)\b|These\s+(?:are|were|can|will|would|could|should|might|must|may|have|had|do|did|mean|show|cause|give|operate|prevent|provide|help|require|result|contain|include|consist|serve|allow|indicate|protect|affect|change|stop|start|control|lead)\b))'

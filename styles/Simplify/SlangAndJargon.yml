@@ -1,0 +1,100 @@
+# STE rule 1.10
+---
+extends: existence
+message: "ASD-STE100 1.10: Do not use slang, colloquial, or jargon words ('%s') as technical nouns. Use approved technical terms."
+link: https://asd-ste100.org/
+level: warning
+ignorecase: true
+tokens:
+  - a bunch of
+  - a couple of
+  - guy
+  - guys
+  - kill
+  - juice
+  - gizmo
+  - gizmos
+  - gadget
+  - gadgets
+  - widget
+  - widgets
+  - thingy
+  - thingies
+  - thingamajig
+  - thingamajigs
+  - thingamabob
+  - thingamabobs
+  - whatchamacallit
+  - dodgy
+  - dicey
+  - hairy
+  - ballpark
+  - ballpark figure
+  - ballpark figures
+  - ball park
+  - rule of thumb
+  - rules of thumb
+  - piece of cake
+  - in a nutshell
+  - at the end of the day
+  - back-of-the-envelope
+  - back of the envelope
+  - hack
+  - hacks
+  - workaround
+  - workarounds
+  - work-around
+  - work-arounds
+  - kludge
+  - kludges
+  - kluge
+  - kluges
+  - jury-rig
+  - jury-rigged
+  - jury-rigs
+  - jury rig
+  - jury rigged
+  - jury rigs
+  - jerry-rig
+  - jerry-rigged
+  - jerry rig
+  - jerry rigged
+  - band-aid
+  - band-aids
+  - band aid
+  - band aids
+  - quick and dirty
+  - low-hanging fruit
+  - deep dive
+  - deep dives
+  - touch base
+  - circle back
+  - move the needle
+  - copter
+  - copters
+  - chopper
+  - choppers
+  - ammo
+  - tranny
+  - trannies
+  - gremlin
+  - gremlins
+  - buggy
+  - sanity check
+  - sanity checks
+  - silver bullet
+  - silver bullets
+  - no-brainer
+  - no brainer
+  - boilerplate
+  - guesstimate
+  - guesstimates
+  - heads-up
+  - heads up
+  - tweak
+  - tweaks
+  - tweaked
+  - tweaking
+  - eyeball
+  - eyeballed
+  - eyeballing

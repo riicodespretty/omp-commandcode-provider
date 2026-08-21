@@ -1,0 +1,68 @@
+# STE rule GR-3
+---
+extends: existence
+message: "ASD-STE100 GR-3: '%s' is an unapproved or ambiguous pronoun. Use approved pronouns or repeat the specific noun."
+link: https://asd-ste100.org/
+level: warning
+ignorecase: true
+tokens:
+  - he
+  - she
+  - him
+  - her
+  - his
+  - hers
+  - himself
+  - herself
+  - itself
+  - myself
+  - yourself
+  - yourselves
+  - ourselves
+  - themselves
+  - oneself
+  - someone
+  - somebody
+  - anyone
+  - anybody
+  - everyone
+  - everybody
+  - no one
+  - no-one
+  - nobody
+  - whoever
+  - whomever
+  - whosoever
+  - whomsoever
+  - whom
+  - whose
+  - whichever
+  - whatever
+  - whatsoever
+  - thereof
+  - therein
+  - thereby
+  - therefor
+  - therefrom
+  - thereon
+  - thereto
+  - therewith
+  - thereunder
+  - thereupon
+  - herein
+  - hereby
+  - hereof
+  - hereinafter
+  - hereto
+  - herewith
+  - hereunder
+  - hereupon
+  - wherein
+  - whereby
+  - whereof
+  - wherefore
+  - whereon
+  - whereto
+  - wherewith
+  - aforementioned
+  - said
