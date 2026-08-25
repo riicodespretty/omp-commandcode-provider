@@ -25,6 +25,7 @@ export const MODEL_CAPABILITIES = {
 	"claude-sonnet-4-6": { reasoning: true, vision: true },
 	"claude-sonnet-5": { reasoning: true, vision: true },
 	"deepseek/deepseek-v4-flash": { reasoning: true, vision: false },
+	"deepseek/deepseek-v4-flash-vision-exp": { reasoning: true, vision: true },
 	"deepseek/deepseek-v4-pro": { reasoning: true, vision: false },
 	"google/gemini-3.1-flash-lite": { reasoning: true, vision: true },
 	"google/gemini-3.5-flash": { reasoning: true, vision: true },

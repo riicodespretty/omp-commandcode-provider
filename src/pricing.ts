@@ -42,6 +42,12 @@ export const MODEL_COSTS = {
 	"claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 	"claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 	"deepseek/deepseek-v4-flash": { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0 },
+	"deepseek/deepseek-v4-flash-vision-exp": {
+		input: 0.22,
+		output: 0.66,
+		cacheRead: 0.007,
+		cacheWrite: 0,
+	},
 	"deepseek/deepseek-v4-pro": { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0 },
 	"google/gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cacheRead: 0.03, cacheWrite: 0 },
 	"google/gemini-3.5-flash": { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 },

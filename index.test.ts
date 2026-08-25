@@ -728,8 +728,8 @@ describe("pricing", () => {
 		expect(costForModel("unknown/nonexistent-model")).toEqual(ZERO_COST);
 	});
 
-	test("MODEL_COSTS contains exactly 57 rows", () => {
-		expect(Object.keys(MODEL_COSTS)).toHaveLength(57);
+	test("MODEL_COSTS contains exactly 58 rows", () => {
+		expect(Object.keys(MODEL_COSTS)).toHaveLength(58);
 	});
 
 	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
@@ -761,8 +761,8 @@ describe("pricing", () => {
 });
 
 describe("capabilities audit", () => {
-	test("MODEL_CAPABILITIES contains exactly 57 rows", () => {
-		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(57);
+	test("MODEL_CAPABILITIES contains exactly 58 rows", () => {
+		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(58);
 	});
 
 	test("MODEL_COSTS and MODEL_CAPABILITIES carry the identical id set", () => {
@@ -810,6 +810,17 @@ describe("capabilities audit", () => {
 	test("stealth/ox-alpha reports reasoning and vision", () => {
 		expect(MODEL_CAPABILITIES["stealth/ox-alpha"]).toEqual({ reasoning: true, vision: true });
 		expect(capabilitiesForModel("stealth/ox-alpha")).toEqual({
+			reasoning: true,
+			input: ["text", "image"],
+		});
+	});
+
+	test("deepseek/deepseek-v4-flash-vision-exp reports reasoning and vision", () => {
+		expect(MODEL_CAPABILITIES["deepseek/deepseek-v4-flash-vision-exp"]).toEqual({
+			reasoning: true,
+			vision: true,
+		});
+		expect(capabilitiesForModel("deepseek/deepseek-v4-flash-vision-exp")).toEqual({
 			reasoning: true,
 			input: ["text", "image"],
 		});
