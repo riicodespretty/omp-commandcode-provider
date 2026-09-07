@@ -73,7 +73,7 @@ Two model IDs resolve against a single source. `Qwen/Qwen3.8-27B` postdates the 
 
 <!-- vale Vale.Terms = YES -->
 
-The discovery endpoint publishes no pricing metadata. The plugin transcribes rates from the two vendor documentation pages in `PRICING_SOURCE_URLS` (`https://commandcode.ai/models` and `https://commandcode.ai/docs/resources/pricing-limits`) and stamps them with `PRICING_VERIFIED_ON` (`2026-08-19`).
+The discovery endpoint publishes no pricing metadata. The plugin transcribes rates from the two vendor documentation pages in `PRICING_SOURCE_URLS` (`https://commandcode.ai/models` and `https://commandcode.ai/docs/resources/pricing-limits`) and stamps them with `PRICING_VERIFIED_ON` (`2026-09-07`).
 
 All rates are in USD per million tokens, matching the unit omp expects. The vendor resolves running promotions into its advertised price list, so the table records a discounted model at its active promotional rate. A model ID that the pricing table does not carry falls back to zero, which omp's model browser renders as "free." When upstream adds new models, the pricing table requires an update before model costs display accurately.
 
@@ -81,19 +81,20 @@ omp bills from a single flat rate per model and supports no context-length tiers
 
 ### Rates that vary
 
-| model                                          | recorded                      | variation                                                       |
-| ---------------------------------------------- | ----------------------------- | --------------------------------------------------------------- |
-| `deepseek/deepseek-v4-flash`                   | 0.22 / 0.66 / 0.007           | off-peak, 17 h a day, peak 0.44 / 1.32 at 01–04 and 06–10 UTC   |
-| `deepseek/deepseek-v4-pro`                     | 0.66 / 1.98 / 0.022           | off-peak, 17 h a day, peak 1.32 / 3.96 at 01–04 and 06–10 UTC   |
-| `Qwen/Qwen3.7-Flash`                           | 0.03 / 0.13 / 0.006 / 0.038   | higher tiers more than 32K and more than 256K input tokens      |
-| `Qwen/Qwen3.7-Plus`                            | 0.4 / 1.6 / 0.08 / 0.5        | higher tier more than 256K input tokens                         |
-| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2           | higher tier more than 272K input tokens                         |
-| `google/gemini-3.7-flash`                      | 0.75 / 3.75 / 0.075 / 0.04167 | 50% promotion, ends 2026-12-31, list 1.5 / 7.5 / 0.15 / 0.08334 |
-| `MiniMaxAI/MiniMax-M3`                         | 0.3 / 1.2 / 0.06              | 50% promotion, list 0.6 / 2.4 / 0.12                            |
-| `xiaomi/mimo-v2.5`                             | 0.14 / 0.28 / 0.0028          | 98% discount, list 0.8 / 4 / 0.16                               |
-| `xiaomi/mimo-v2.5-pro`                         | 0.435 / 0.87 / 0.0036         | 99% discount, list 2 / 6 / 0.4                                  |
-| `meta/muse-spark-1.2-contributor`              | 0.1 / 0.2 / 0.002             | Muse Spark 1.2 at about 95% off                                 |
-| `poolside/laguna-s-2.1-free`                   | 0 / 0 / 0                     | genuinely free                                                  |
+| model                                          | recorded                    | variation                                                     |
+| ---------------------------------------------- | --------------------------- | ------------------------------------------------------------- |
+| `deepseek/deepseek-v4-flash`                   | 0.22 / 0.66 / 0.007         | off-peak, 17 h a day, peak 0.44 / 1.32 at 01–04 and 06–10 UTC |
+| `deepseek/deepseek-v4-pro`                     | 0.66 / 1.98 / 0.022         | off-peak, 17 h a day, peak 1.32 / 3.96 at 01–04 and 06–10 UTC |
+| `Qwen/Qwen3.7-Flash`                           | 0.03 / 0.13 / 0.006 / 0.038 | higher tiers more than 32K and more than 256K input tokens    |
+| `Qwen/Qwen3.7-Plus`                            | 0.4 / 1.6 / 0.08 / 0.5      | higher tier more than 256K input tokens                       |
+| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2         | higher tier more than 272K input tokens                       |
+| `MiniMaxAI/MiniMax-M3`                         | 0.3 / 1.2 / 0.06            | 50% promotion, list 0.6 / 2.4 / 0.12                          |
+| `xiaomi/mimo-v2.5`                             | 0.14 / 0.28 / 0.0028        | 98% discount, list 0.8 / 4 / 0.16                             |
+| `xiaomi/mimo-v2.5-pro`                         | 0.435 / 0.87 / 0.0036       | 99% discount, list 2 / 6 / 0.4                                |
+| `meta/muse-spark-1.2-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.2 at about 95% off                               |
+| `meta/muse-spark-1.3-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.3 at about 95% off                               |
+| `poolside/laguna-s-2.1-free`                   | 0 / 0 / 0                   | genuinely free                                                |
+| `meituan/LongCat-2.0:free`                     | 0 / 0 / 0                   | free while it lasts                                           |
 
 ## Install
 

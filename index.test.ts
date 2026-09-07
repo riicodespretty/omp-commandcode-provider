@@ -728,8 +728,18 @@ describe("pricing", () => {
 		expect(costForModel("unknown/nonexistent-model")).toEqual(ZERO_COST);
 	});
 
-	test("MODEL_COSTS contains exactly 58 rows", () => {
-		expect(Object.keys(MODEL_COSTS)).toHaveLength(58);
+	test("gemini-3.7-flash bills at list price now that its promotion ended", () => {
+		expect(costForModel("google/gemini-3.7-flash")).toEqual({
+			input: 1.5,
+			output: 7.5,
+			cacheRead: 0.15,
+			cacheWrite: 0.08334,
+		});
+		expect(costForModel("meituan/LongCat-2.0:free")).toEqual(ZERO_COST);
+	});
+
+	test("MODEL_COSTS contains exactly 67 rows", () => {
+		expect(Object.keys(MODEL_COSTS)).toHaveLength(67);
 	});
 
 	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
@@ -761,8 +771,8 @@ describe("pricing", () => {
 });
 
 describe("capabilities audit", () => {
-	test("MODEL_CAPABILITIES contains exactly 58 rows", () => {
-		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(58);
+	test("MODEL_CAPABILITIES contains exactly 67 rows", () => {
+		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(67);
 	});
 
 	test("MODEL_COSTS and MODEL_CAPABILITIES carry the identical id set", () => {
@@ -807,9 +817,21 @@ describe("capabilities audit", () => {
 		expect(capabilitiesForModel("nvidia/nemotron-3-ultra-550b-a55b").reasoning).toBe(true);
 		expect(MODEL_CAPABILITIES["nvidia/nemotron-3-ultra-550b-a55b"]?.reasoning).toBe(true);
 	});
-	test("stealth/ox-alpha reports reasoning and vision", () => {
-		expect(MODEL_CAPABILITIES["stealth/ox-alpha"]).toEqual({ reasoning: true, vision: true });
-		expect(capabilitiesForModel("stealth/ox-alpha")).toEqual({
+
+	test("2026-09 catalog additions report the documented modalities", () => {
+		expect(capabilitiesForModel("z-ai/glm-5.3-flash")).toEqual({
+			reasoning: true,
+			input: ["text", "image"],
+		});
+		expect(capabilitiesForModel("meituan/LongCat-2.0:free")).toEqual({
+			reasoning: true,
+			input: ["text"],
+		});
+		expect(capabilitiesForModel("deepseek/deepseek-v4-flash-fast")).toEqual({
+			reasoning: true,
+			input: ["text"],
+		});
+		expect(capabilitiesForModel("claude-fable-5-1")).toEqual({
 			reasoning: true,
 			input: ["text", "image"],
 		});
@@ -1475,8 +1497,18 @@ describe("extension registration", () => {
 						data: {
 							credits: { monthlyCredits: 100, purchasedCredits: 20, freeCredits: 5 },
 							windowLimits: {
-								fiveHour: { used: 5, cap: 14, exceeded: false, resetAt: 1787301644678 },
-								weekly: { used: 34.5, cap: 35, exceeded: true, resetAt: 1787764197647 },
+								fiveHour: {
+									used: 5,
+									cap: 14,
+									exceeded: false,
+									resetAt: Date.now() + 3 * 3_600_000,
+								},
+								weekly: {
+									used: 34.5,
+									cap: 35,
+									exceeded: true,
+									resetAt: Date.now() + 5 * 86_400_000,
+								},
 							},
 						},
 					});
