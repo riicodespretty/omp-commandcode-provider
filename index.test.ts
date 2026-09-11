@@ -488,7 +488,7 @@ describe("catalog — modelsFromApiResponse", () => {
 		expect(models).toHaveLength(3);
 
 		expect(models[0]?.cost).toEqual({ input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
-		expect(models[1]?.cost).toEqual({ input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0 });
+		expect(models[1]?.cost).toEqual({ input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 });
 		expect(models[2]?.cost).toEqual(ZERO_COST);
 	});
 
@@ -720,9 +720,9 @@ describe("pricing", () => {
 			cacheWrite: 2.5,
 		});
 		expect(costForModel("deepseek/deepseek-v4-flash")).toEqual({
-			input: 0.22,
-			output: 0.66,
-			cacheRead: 0.007,
+			input: 0.15,
+			output: 0.6,
+			cacheRead: 0.003,
 			cacheWrite: 0,
 		});
 		expect(costForModel("unknown/nonexistent-model")).toEqual(ZERO_COST);

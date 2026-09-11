@@ -13,7 +13,7 @@ export const PRICING_SOURCE_URLS = [
 	"https://commandcode.ai/docs/resources/pricing-limits",
 ] as const;
 
-export const PRICING_VERIFIED_ON = "2026-09-07";
+export const PRICING_VERIFIED_ON = "2026-09-11";
 
 export const ZERO_COST: ModelCost = {
 	input: 0,
@@ -44,12 +44,12 @@ export const MODEL_COSTS = {
 	"claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	"claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 	"claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-	"deepseek/deepseek-v4-flash": { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0 },
+	"deepseek/deepseek-v4-flash": { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
 	"deepseek/deepseek-v4-flash-fast": { input: 0.28, output: 0.56, cacheRead: 0.07, cacheWrite: 0 },
 	"deepseek/deepseek-v4-flash-vision-exp": {
-		input: 0.22,
-		output: 0.66,
-		cacheRead: 0.007,
+		input: 0.15,
+		output: 0.6,
+		cacheRead: 0.003,
 		cacheWrite: 0,
 	},
 	"deepseek/deepseek-v4-pro": { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0 },
