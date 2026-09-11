@@ -81,20 +81,22 @@ omp bills from a single flat rate per model and supports no context-length tiers
 
 ### Rates that vary
 
-| model                                          | recorded                    | variation                                                     |
-| ---------------------------------------------- | --------------------------- | ------------------------------------------------------------- |
-| `deepseek/deepseek-v4-flash`                   | 0.22 / 0.66 / 0.007         | off-peak, 17 h a day, peak 0.44 / 1.32 at 01–04 and 06–10 UTC |
-| `deepseek/deepseek-v4-pro`                     | 0.66 / 1.98 / 0.022         | off-peak, 17 h a day, peak 1.32 / 3.96 at 01–04 and 06–10 UTC |
-| `Qwen/Qwen3.7-Flash`                           | 0.03 / 0.13 / 0.006 / 0.038 | higher tiers more than 32K and more than 256K input tokens    |
-| `Qwen/Qwen3.7-Plus`                            | 0.4 / 1.6 / 0.08 / 0.5      | higher tier more than 256K input tokens                       |
-| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2         | higher tier more than 272K input tokens                       |
-| `MiniMaxAI/MiniMax-M3`                         | 0.3 / 1.2 / 0.06            | 50% promotion, list 0.6 / 2.4 / 0.12                          |
-| `xiaomi/mimo-v2.5`                             | 0.14 / 0.28 / 0.0028        | 98% discount, list 0.8 / 4 / 0.16                             |
-| `xiaomi/mimo-v2.5-pro`                         | 0.435 / 0.87 / 0.0036       | 99% discount, list 2 / 6 / 0.4                                |
-| `meta/muse-spark-1.2-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.2 at about 95% off                               |
-| `meta/muse-spark-1.3-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.3 at about 95% off                               |
-| `poolside/laguna-s-2.1-free`                   | 0 / 0 / 0                   | genuinely free                                                |
-| `meituan/LongCat-2.0:free`                     | 0 / 0 / 0                   | free while it lasts                                           |
+| model                                          | recorded                    | variation                                                                  |
+| ---------------------------------------------- | --------------------------- | -------------------------------------------------------------------------- |
+| `deepseek/deepseek-v4-flash`                   | 0.22 / 0.66 / 0.007         | off-peak, 17 h a day, peak 0.44 / 1.32 at 01–04 and 06–10 UTC              |
+| `deepseek/deepseek-v4-pro`                     | 0.66 / 1.98 / 0.022         | off-peak, 17 h a day, peak 1.32 / 3.96 at 01–04 and 06–10 UTC              |
+| `deepseek/deepseek-v4.1-flash`                 | 0.15 / 0.6 / 0.003          | off-peak, 17 h a day, peak 0.3 / 1.2 at 01–04 and 06–10 UTC, weekdays only |
+| `Qwen/Qwen3.7-Flash`                           | 0.03 / 0.13 / 0.006 / 0.038 | higher tiers more than 32K and more than 256K input tokens                 |
+| `Qwen/Qwen3.7-Plus`                            | 0.4 / 1.6 / 0.08 / 0.5      | higher tier more than 256K input tokens                                    |
+| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 5/30, 2/12, 0.2/1.2         | higher tier more than 272K input tokens                                    |
+| `MiniMaxAI/MiniMax-M3`                         | 0.3 / 1.2 / 0.06            | 50% promotion, list 0.6 / 2.4 / 0.12                                       |
+| `xiaomi/mimo-v2.5`                             | 0.14 / 0.28 / 0.0028        | 98% discount, list 0.8 / 4 / 0.16                                          |
+| `xiaomi/mimo-v2.5-pro`                         | 0.435 / 0.87 / 0.0036       | 99% discount, list 2 / 6 / 0.4                                             |
+| `meta/muse-spark-1.2-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.2 at about 95% off                                            |
+| `meta/muse-spark-1.3-contributor`              | 0.1 / 0.2 / 0.002           | Muse Spark 1.3 at about 95% off                                            |
+| `poolside/laguna-s-2.1-free`                   | 0 / 0 / 0                   | genuinely free                                                             |
+| `meituan/LongCat-2.0:free`                     | 0 / 0 / 0                   | free while it lasts                                                        |
+| `inclusionai/ling-3.0-flash-sante:free`        | 0 / 0 / 0                   | free while it lasts                                                        |
 
 ## Install
 

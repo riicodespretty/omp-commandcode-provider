@@ -738,8 +738,8 @@ describe("pricing", () => {
 		expect(costForModel("meituan/LongCat-2.0:free")).toEqual(ZERO_COST);
 	});
 
-	test("MODEL_COSTS contains exactly 67 rows", () => {
-		expect(Object.keys(MODEL_COSTS)).toHaveLength(67);
+	test("MODEL_COSTS contains exactly 69 rows", () => {
+		expect(Object.keys(MODEL_COSTS)).toHaveLength(69);
 	});
 
 	test("every MODEL_COSTS row has four finite non-negative numbers", () => {
@@ -771,8 +771,8 @@ describe("pricing", () => {
 });
 
 describe("capabilities audit", () => {
-	test("MODEL_CAPABILITIES contains exactly 67 rows", () => {
-		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(67);
+	test("MODEL_CAPABILITIES contains exactly 69 rows", () => {
+		expect(Object.keys(MODEL_CAPABILITIES)).toHaveLength(69);
 	});
 
 	test("MODEL_COSTS and MODEL_CAPABILITIES carry the identical id set", () => {
